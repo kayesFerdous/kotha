@@ -1,0 +1,22 @@
+# Rust
+target/
+**/target/
+
+# Model weights — 778 MB, fetched by setup.sh, never committed
+models/
+
+# Audio samples used for the spike
+samples/
+*.wav
+*.mp3
+*.m4a
+
+# Node / Tauri frontend (from Phase 4 onward)
+node_modules/
+dist/
+.vite/
+
+# Local scratch
+.DS_Store
+*.log
+out/

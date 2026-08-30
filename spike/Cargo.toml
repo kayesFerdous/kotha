@@ -1,0 +1,19 @@
+[package]
+name    = "kotha-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Phase 0 only. This crate exists to answer one question — does ct2rs load the
+# published model and produce the same text faster-whisper does — and will be
+# deleted once the real app absorbs it.
+
+[dependencies]
+# Default features include `ruy`, the int8 GEMM backend that matters on ARM.
+# On Apple Silicon, `accelerate` is worth benchmarking against it later.
+ct2rs  = { version = "0.9", features = ["whisper"] }
+hound  = "3.5"    # WAV reading. Small and does one thing.
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
