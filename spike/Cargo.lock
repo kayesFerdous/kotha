@@ -262,6 +262,7 @@ dependencies = [
  "cxx-build",
  "mel_spec",
  "ndarray",
+ "onednn-src",
  "sentencepiece",
  "serde",
  "serde_json",
@@ -924,6 +925,15 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "onednn-src"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e92c3180a7b33d1fcb34099d9010e6fe5ea129a2b7c5d217ea025fc9146c5f62"
+dependencies = [
+ "cmake",
+]
 
 [[package]]
 name = "onig"

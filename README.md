@@ -8,8 +8,9 @@ Bengali script, English in **Latin script**. `meeting`, not `মিটিং`.
 Everything runs on your own CPU. Nothing is uploaded, there is no account and no
 API key, and after the first launch it never needs the network.
 
-> **Status: early.** The scaffold and the plan are written; nothing is built
-> yet. See [`PLAN.md`](PLAN.md) for exactly where things stand.
+> **Status: early.** The inference engine is proven — the Rust build decodes at
+> 1.52x real time on a Ryzen 5600G, matching faster-whisper. Nothing above that
+> layer exists yet. See [`PLAN.md`](PLAN.md) for exactly where things stand.
 
 ---
 
