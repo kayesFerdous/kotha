@@ -100,21 +100,63 @@ else
   require_power "download ${#missing[@]} model file(s)"
   for f in "${missing[@]}"; do
     printf '  ↓ %s\n' "$f"
-    # -C - resumes a partial file, so an interrupted download is not wasted.
-    curl -fL -C - --retry 3 --progress-bar -o "$MODEL_DIR/$f" "$HF_BASE/$f"
+    # HuggingFace resets long connections often enough that a single curl is
+    # not reliable for a 775 MB file — we lost one at 226 MB. -C - resumes from
+    # whatever is already on disk, so each attempt picks up where the last one
+    # died rather than starting over.
+    for attempt in 1 2 3 4 5 6; do
+      if curl -fL -C - --retry 5 --retry-delay 3 --retry-all-errors \
+              --progress-bar -o "$MODEL_DIR/$f" "$HF_BASE/$f"; then
+        break
+      fi
+      # curl exits 33 when the server will not honour a range request and 22
+      # when the file is already complete; both mean "stop retrying".
+      rc=$?
+      [[ $rc -eq 33 || $rc -eq 22 ]] && break
+      warn "attempt $attempt failed (curl $rc) — resuming"
+      [[ $attempt -eq 6 ]] && die "gave up on $f after 6 attempts"
+      sleep 3
+    done
   done
   ok "downloaded to $MODEL_DIR"
 fi
 
-# Cheap sanity check: model.bin should be ~775 MB. A truncated download is the
-# most likely failure here and it fails confusingly later.
-size=$(wc -c < "$MODEL_DIR/model.bin" | tr -d ' ')
-if [[ "$size" -lt 700000000 ]]; then
-  die "model.bin is only $((size/1024/1024)) MB — expected ~775 MB.
-    The download was truncated. Delete it and re-run:
-      rm '$MODEL_DIR/model.bin' && ./setup.sh"
+# Verify against HuggingFace's own manifest rather than a hard-coded guess.
+# A truncated or badly-resumed model.bin fails much later and very confusingly,
+# and eyeballing the size does not catch a corrupt resume. Note HF reports
+# decimal MB, so the "775 MB" on the web page is 774,731,149 bytes — do not
+# compare it against a MiB figure.
+say "Verifying"
+manifest=$(curl -sS "https://huggingface.co/api/models/$HF_REPO/tree/main")
+
+expected_size=$(printf '%s' "$manifest" | python3 -c "
+import sys, json
+print(next(e['size'] for e in json.load(sys.stdin) if e['path'] == 'model.bin'))")
+actual_size=$(wc -c < "$MODEL_DIR/model.bin" | tr -d ' ')
+
+if [[ "$actual_size" != "$expected_size" ]]; then
+  die "model.bin is $actual_size bytes, expected $expected_size.
+    The download is incomplete. Re-run ./setup.sh — curl resumes from where it
+    stopped, so nothing already fetched is wasted."
 fi
-ok "model.bin $((size/1024/1024)) MB"
+ok "model.bin $actual_size bytes — size matches"
+
+expected_sha=$(printf '%s' "$manifest" | python3 -c "
+import sys, json
+print(next((e.get('lfs') or {}).get('oid', '') for e in json.load(sys.stdin) if e['path'] == 'model.bin'))")
+
+if [[ -n "$expected_sha" ]]; then
+  printf '  … hashing 774 MB, this takes a few seconds\n'
+  actual_sha=$(shasum -a 256 "$MODEL_DIR/model.bin" | awk '{print $1}')
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    die "model.bin sha256 does not match HuggingFace.
+      expected $expected_sha
+      actual   $actual_sha
+    A resume corrupted it. Delete and re-fetch:
+      rm '$MODEL_DIR/model.bin' && ./setup.sh"
+  fi
+  ok "sha256 verified"
+fi
 
 say "Done"
 cat <<EOF

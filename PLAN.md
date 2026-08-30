@@ -38,7 +38,9 @@ Each phase has one acceptance test. Do not start the next phase until it passes.
 
 Does `ct2rs` load this model and produce the same text faster-whisper does?
 
-- [ ] `./setup.sh` — install Rust + cmake, fetch the model
+- [ ] Toolchain — **run this yourself, an agent cannot** (see note below)
+- [x] Model downloaded to `models/whisper-medium-bn-en-cs-faster/` —
+      774,731,149 bytes, sha256 `9c0e38dc…ea74`, verified against the HF manifest
 - [ ] `cd spike && cargo run --release -- <model-dir> <wav>...`
 - [ ] Get 20 test WAVs onto this machine (see *Getting audio* below)
 - [ ] Diff Rust output against faster-whisper on the same files
@@ -53,6 +55,28 @@ gate exists so that decision costs two days, not six weeks.
 
 **Why first:** everything after this is ordinary application work. This is the
 only genuine unknown in the project.
+
+**Toolchain note.** Claude Code's auto mode blocks package installation and
+`curl | sh`, so `setup.sh`'s Rust and cmake steps cannot be run by an agent.
+Kayes runs these once, by hand:
+
+```bash
+brew install cmake rustup
+echo 'export PATH="/opt/homebrew/opt/rustup/bin:$PATH"' >> ~/.zshrc
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+rustup default stable
+```
+
+Two traps, both hit on 2026-08-30:
+
+- Homebrew's `rustup` formula **no longer ships `rustup-init`**. Use
+  `rustup default stable` to install the toolchain instead.
+- It is **keg-only**, so it is not symlinked into `/opt/homebrew/bin`. Without
+  the PATH line above, `rustup` is "command not found" even though it installed
+  fine.
+
+`rustup` is preferred over `brew install rust` because Tauri needs per-target
+toolchains later, and the two formulae conflict.
 
 ---
 
@@ -153,6 +177,32 @@ dictated sentence without reading anything.
 - [ ] Per-app "never dictate here" list
 
 ---
+
+## Continuing on the Arch / Ryzen machine
+
+The scaffold was written on the M2. To pick up there:
+
+```bash
+sudo pacman -S cmake rustup && rustup default stable
+```
+
+Two shortcuts that machine has and the Mac did not:
+
+- **The model is probably already local.** `cpu_bench.py` in the paper repo
+  points at `~/Documents/ASR/fine_tuned/whisper-medium-bn-v1.3-ct2-int8`. If
+  that is the shipped int8 release, pass it to the spike directly instead of
+  re-downloading 774 MB. Confirm first — `model.bin` should be
+  774,731,149 bytes with sha256 `9c0e38dc…ea74`. If it differs, run
+  `./setup.sh` and use the fresh copy; the gate has to test what ships.
+- **The test WAVs are there**, under `bangla-asr-test/chunks/test/`. That is the
+  audio the gate actually needs, because it comes with reference text.
+
+Note the battery guard in `setup.sh` is macOS-only and is a no-op on Linux,
+which is correct — that machine is a desktop.
+
+Hardware differs and the numbers do not transfer: Ryzen 5 5600G is 6 cores / 12
+SMT threads, where 6 threads beat 12. The M2 is 4P + 4E with no SMT. Record both
+separately in the measurements table.
 
 ## Getting audio for Phase 0
 
