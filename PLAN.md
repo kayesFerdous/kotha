@@ -5,9 +5,10 @@ laid out visually is at
 <https://claude.ai/code/artifact/3107084e-3472-4798-918f-e47e3410785b>. This file is the working state:
 update it as phases complete. Last touched 2026-08-30.
 
-**Status: Phase 0 written, not yet run.** Nothing has been compiled and the
-model has not been downloaded — the laptop was on battery when the scaffold was
-written. `./setup.sh` is the next command, plugged in.
+**Status: Phase 0 run on the Arch/Ryzen machine, 2026-08-30. The engine works.**
+`ct2rs` loads the published model and decodes at faster-whisper's speed. Three
+defects were found and two are fixed; the third (§ *The mel bug*) is diagnosed
+and not yet fixed. Phase 0 is not signed off until it is.
 
 ---
 
@@ -34,20 +35,26 @@ the model was trained on.
 
 Each phase has one acceptance test. Do not start the next phase until it passes.
 
-### Phase 0 — Prove the engine  ⟵ GATE, next up
+### Phase 0 — Prove the engine  ⟵ GATE, nearly closed
 
 Does `ct2rs` load this model and produce the same text faster-whisper does?
 
-- [ ] Toolchain — **run this yourself, an agent cannot** (see note below)
-- [x] Model downloaded to `models/whisper-medium-bn-en-cs-faster/` —
-      774,731,149 bytes, sha256 `9c0e38dc…ea74`, verified against the HF manifest
-- [ ] `cd spike && cargo run --release -- <model-dir> <wav>...`
-- [ ] Get 20 test WAVs onto this machine (see *Getting audio* below)
-- [ ] Diff Rust output against faster-whisper on the same files
-- [ ] Record the M2's real RTF and best thread count in this file
+- [x] Toolchain — Arch ships it: `pacman -S rust cmake`. No rustup needed
+- [x] Model verified — 774,731,149 bytes, sha256 `9c0e38dc…ea74`
+- [x] `cargo build --release` — compiles clean, first try, no API fixes
+- [x] Test audio — all 393 WAVs already on this machine
+- [x] Diff Rust output against faster-whisper on 50 utterances
+- [x] Record real RTF for the Ryzen (below)
+- [ ] **Fix the mel normalisation bug, then re-diff** — the one thing left
+- [ ] Repeat on the M2
 
 **Accept when:** the strings match faster-whisper's, and English words come out
 in Latin script with spaces intact.
+
+**Where it stands:** the second half passes outright — English is in Latin
+script, spaces intact, zero fusion warnings across 50 utterances. The
+`suppress_tokens` catastrophe did not occur. Speed matches Python exactly. The
+strings do *not* yet match, and the reason is understood and fixable.
 
 **If it fails:** stop and reconsider. Fallback is a bundled Python sidecar
 running faster-whisper — roughly +300 MB and worse packaging, but it works. This
@@ -56,27 +63,76 @@ gate exists so that decision costs two days, not six weeks.
 **Why first:** everything after this is ordinary application work. This is the
 only genuine unknown in the project.
 
-**Toolchain note.** Claude Code's auto mode blocks package installation and
-`curl | sh`, so `setup.sh`'s Rust and cmake steps cannot be run by an agent.
-Kayes runs these once, by hand:
+#### What the gate found — 2026-08-30, Ryzen 5600G
 
-```bash
-brew install cmake rustup
-echo 'export PATH="/opt/homebrew/opt/rustup/bin:$PATH"' >> ~/.zshrc
-export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
-rustup default stable
-```
+Baseline for the diff is `~/Documents/ASR/results/cpu_bench.json`, 50 utterances
+decoded by faster-whisper **on this same machine** with the identical params
+(`language="bn", beam_size=1, suppress_tokens=[]`). Same files, same hardware,
+so the comparison is clean.
 
-Two traps, both hit on 2026-08-30:
+**1. `processor_class` is missing from the published model.** `ct2rs`
+deserialises `preprocessor_config.json` into a struct that requires a
+`processor_class` field. The published file has no such field, so
+`Whisper::new()` fails with `missing field processor_class`. faster-whisper
+never needed it.
 
-- Homebrew's `rustup` formula **no longer ships `rustup-init`**. Use
-  `rustup default stable` to install the toolchain instead.
-- It is **keg-only**, so it is not symlinked into `/opt/homebrew/bin`. Without
-  the PATH line above, `rustup` is "command not found" even though it installed
-  fine.
+Worked around locally by writing a patched copy into
+`models/whisper-medium-bn-en-cs-faster/` (the large files are symlinked to
+`~/Documents/ASR/fine_tuned/whisper-medium-bn-v1.3-ct2-int8/`, which is *not*
+edited — that tree belongs to the paper project).
 
-`rustup` is preferred over `brew install rust` because Tauri needs per-target
-toolchains later, and the two formulae conflict.
+**This will hit every user**, because the file on HuggingFace is the one that
+lacks the field. Two ways out, and it is Kayes's call which:
+  - add `"processor_class": "WhisperProcessor"` to the HF repo, or
+  - have the app patch the file after download.
+
+**2. The mel bug — `ct2rs` normalises per frame.**  ⟵ *unfixed, blocks the gate*
+
+`ct2rs-0.9.22/src/whisper.rs:104` calls `norm_mel()` on one 80×1 frame at a
+time. `norm_mel` clamps against `max - 8.0` computed over whatever array it is
+handed — so each frame is normalised against *its own* peak. Whisper takes that
+max over the entire 30-second spectrogram. The encoder is therefore fed
+subtly wrong features everywhere.
+
+This is why only 14 of 50 outputs match faster-whisper byte-for-byte. The
+divergence clusters at utterance starts, where these chunks begin mid-word and
+the decoder is least certain — faster-whisper emits `0`, `ntermedit`, `jara`
+where Rust emits `করতে পারেন`, `intermediat`, `যারা`.
+
+**The fix:** `pub mod sys` is public, and `sys::Whisper::generate()` takes a
+features `StorageView` directly. So bypass the high-level wrapper: compute the
+log-mel ourselves, apply the `max - 8.0` clamp once globally, hand over the
+StorageView. `mel_spec` and `ndarray` are already in the tree — the filterbank
+is `mel_spec::mel::mel(16000.0, 400, 80, None, None, false, true)`, which is
+exactly what `ct2rs` builds internally. Roughly 60 lines, no new dependencies.
+
+Worth reporting upstream; the accumulate-then-normalise change is small.
+
+**3. Wrong GEMM backend cost 1.8×.**  ⟵ *fixed*
+
+`ct2rs`'s default features are `["all-tokenizers", "ruy", "cuda-small-binary"]`.
+`ruy` is Google's **ARM**-tuned int8 kernel — right on Apple Silicon, wrong on
+x86-64, where the fast path is oneDNN. faster-whisper's PyPI wheel ships oneDNN
+plus MKL, which is the whole of the gap:
+
+| Build | RTF | vs realtime |
+|---|---|---|
+| Rust, `ruy` (default) | 1.222 | 0.82× |
+| Rust, `dnnl` (oneDNN) | **0.660** | **1.52×** |
+| faster-whisper (Python) | 0.669 | 1.50× |
+
+`spike/Cargo.toml` now selects the backend per target — `dnnl` on x86-64, `ruy`
+elsewhere. Costs 8m48s of build time and grows the binary 8.3 MB → 75.7 MB
+(oneDNN is linked statically). That matters against the "~20 MB installers"
+line in CLAUDE.md §3 and should be revisited at Phase 6; next to a 775 MB model
+it is not the thing to optimise first.
+
+**On accuracy — do not bank this yet.** Against the references, Rust scores
+CER 0.0415 and faster-whisper 0.0500 on these 50 utterances. That is not a
+claim of a better engine: 50 utterances is a small sample, and the most likely
+explanation is that per-frame normalisation is acting as accidental AGC on
+noisy YouTube audio. Expect it to converge toward the Python number once the
+mel bug is fixed. Re-measure then.
 
 ---
 
@@ -178,43 +234,44 @@ dictated sentence without reading anything.
 
 ---
 
-## Continuing on the Arch / Ryzen machine
+## The two machines
 
-The scaffold was written on the M2. To pick up there:
+Phase 0 was run on the **Arch / Ryzen 5600G desktop**, which turned out to have
+everything already: `pacman -S rust cmake` (no rustup — Arch's `rust` package
+ships cargo), the model at
+`~/Documents/ASR/fine_tuned/whisper-medium-bn-v1.3-ct2-int8` verified byte-exact
+against the release, all 393 test WAVs under `bangla-asr-test/chunks/test/`, and
+a faster-whisper baseline in `results/cpu_bench.json`. Nothing needed
+downloading and the "copy 20 WAVs over" step never applied.
+
+`models/whisper-medium-bn-en-cs-faster/` here is a directory of symlinks into
+that paper-project tree, plus one real local file — the patched
+`preprocessor_config.json`. Nothing under `~/Documents/ASR` is modified.
+
+**Still to do on the M2:** install the toolchain by hand (below), fetch the
+model with `./setup.sh`, and re-measure. The numbers do not transfer — the
+Ryzen is 6 cores / 12 SMT threads where 6 beat 12; the M2 is 4P + 4E with no
+SMT, so sweep 4 against 8. The backend also differs: `ruy` is correct there and
+`dnnl` is correct here, which `spike/Cargo.toml` now handles per target. Also
+worth benchmarking `accelerate` against `ruy` on Apple Silicon.
+
+The battery guard in `setup.sh` is macOS-only and a no-op on Linux, which is
+right — the Arch box is a desktop.
+
+**M2 toolchain**, run by hand (auto mode blocks package installs):
 
 ```bash
-sudo pacman -S cmake rustup && rustup default stable
+brew install cmake rustup
+echo 'export PATH="/opt/homebrew/opt/rustup/bin:$PATH"' >> ~/.zshrc
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+rustup default stable
 ```
 
-Two shortcuts that machine has and the Mac did not:
-
-- **The model is probably already local.** `cpu_bench.py` in the paper repo
-  points at `~/Documents/ASR/fine_tuned/whisper-medium-bn-v1.3-ct2-int8`. If
-  that is the shipped int8 release, pass it to the spike directly instead of
-  re-downloading 774 MB. Confirm first — `model.bin` should be
-  774,731,149 bytes with sha256 `9c0e38dc…ea74`. If it differs, run
-  `./setup.sh` and use the fresh copy; the gate has to test what ships.
-- **The test WAVs are there**, under `bangla-asr-test/chunks/test/`. That is the
-  audio the gate actually needs, because it comes with reference text.
-
-Note the battery guard in `setup.sh` is macOS-only and is a no-op on Linux,
-which is correct — that machine is a desktop.
-
-Hardware differs and the numbers do not transfer: Ryzen 5 5600G is 6 cores / 12
-SMT threads, where 6 threads beat 12. The M2 is 4P + 4E with no SMT. Record both
-separately in the measurements table.
-
-## Getting audio for Phase 0
-
-The 393 test WAVs are **not on this Mac**. They live on the Arch machine under
-`bangla-asr-test/chunks/test/`. Two ways forward:
-
-1. **Copy ~20 chunks over.** Best for the gate — they come with known reference
-   text, so the comparison is meaningful. A few MB.
-2. **Record on the Mac.** Fine for a smoke test, and it is the real use case,
-   but there is no reference to diff against.
-
-Do (1) for the gate, (2) for everything after.
+Two traps, both hit on 2026-08-30: Homebrew's `rustup` formula no longer ships
+`rustup-init` (use `rustup default stable`), and it is keg-only, so without the
+PATH line `rustup` is "command not found" even though it installed fine.
+`rustup` beats `brew install rust` because Tauri needs per-target toolchains
+later, and the two formulae conflict.
 
 ---
 
@@ -239,10 +296,16 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 
 | What | Value | Taken on |
 |---|---|---|
-| RTF, int8, 4 threads | — | |
-| RTF, int8, 8 threads | — | |
+| RTF, int8, 6 threads — Ryzen 5600G, oneDNN | **0.660** (1.52× realtime) | 2026-08-30 |
+| RTF, int8, 6 threads — Ryzen 5600G, ruy | 1.222 (0.82× realtime) | 2026-08-30 |
+| RTF, int8, 6 threads — faster-whisper, same 50 files | 0.669 (1.50× realtime) | earlier, `cpu_bench.json` |
+| Model load time — Ryzen | 0.3 s | 2026-08-30 |
+| CER vs reference, 50 utts — Rust, mel bug present | 0.0415 | 2026-08-30 |
+| CER vs reference, 50 utts — faster-whisper | 0.0500 | 2026-08-30 |
+| Strings identical to faster-whisper, 50 utts | 14 / 50 | 2026-08-30 |
+| RTF, int8, 4 threads — M2 | — | |
+| RTF, int8, 8 threads — M2 | — | |
 | Peak RSS | — | |
-| Model load time | — | |
 | Corrector latency per sentence | — | |
 | Strict English-F1, before corrector | — | |
 | Strict English-F1, after corrector | — | |

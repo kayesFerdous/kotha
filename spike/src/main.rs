@@ -22,10 +22,16 @@
 //!     KOTHA_THREADS   CPU threads (default 0 = let CTranslate2 decide).
 //!                     Worth sweeping: 4 (P-cores only) vs 8 on an M2.
 //!
-//! NOTE: this has never been compiled — the laptop was on battery when it was
-//! written. The `ct2rs` API surface used here was read from docs.rs, but expect
-//! to fix a name or two on the first build. `cargo doc --open -p ct2rs` is the
-//! fastest way to check.
+//! STATUS (2026-08-30, Ryzen 5600G): compiles clean and runs. 50 utterances
+//! decoded at RTF 0.660 with the oneDNN backend, matching faster-whisper's
+//! 0.669 on the same files. English comes out in Latin script with spaces
+//! intact — no fusion, so the `suppress_tokens` bug did not bite.
+//!
+//! One known defect remains, and it is why the output is not yet byte-identical
+//! to faster-whisper's: `ct2rs` normalises the mel spectrogram per *frame*
+//! rather than per 30-second window (see PLAN.md, "The mel bug"). Fixing it
+//! means bypassing `ct2rs::Whisper` for `ct2rs::sys::Whisper`, which accepts a
+//! features StorageView directly.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
