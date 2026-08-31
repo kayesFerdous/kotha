@@ -25,5 +25,9 @@ out/
 spike/gate_out.txt
 spike/mel_dump.bin
 spike/matched_baseline.json
+spike/decode_393.txt
 __pycache__/
 *.pyc
+
+# Session handoff notes — PLAN.md is the durable copy
+HANDOFF-PROMPT.md
