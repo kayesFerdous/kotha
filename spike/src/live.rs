@@ -457,7 +457,7 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
 
 /// Live: the microphone.
 fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
-    let Microphone { stream, blocks: rx, mut intake } = open_microphone()?;
+    let Microphone { stream, blocks: rx, mut intake, .. } = open_microphone()?;
 
     let engine = warm_up(model_dir, threads)?;
     let corrector = Corrector::new();
@@ -523,6 +523,15 @@ pub struct Microphone {
     pub stream: cpal::Stream,
     pub blocks: mpsc::Receiver<Vec<f32>>,
     pub intake: Intake,
+    /// How many samples of a captured block make up roughly 1/30 second.
+    ///
+    /// The pill's waveform wants a steady ~30 levels a second, and a capture
+    /// block is whatever size the driver felt like — 64 ms here, but it is a
+    /// hardware decision and a large one would make the waveform update twice
+    /// a second and look frozen. Slicing each block into pieces this size
+    /// makes the animation the same on every machine, and every value is
+    /// still the RMS of a real 33 ms window.
+    pub level_chunk: usize,
 }
 
 /// Open the default input device and start capturing.
@@ -550,9 +559,11 @@ pub fn open_microphone() -> Result<Microphone> {
     let (tx, blocks) = mpsc::channel::<Vec<f32>>();
     let stream = build_stream(&device, &supported, tx)?;
     let intake = Intake::new(in_rate, channels)?;
+    // Interleaved, so a frame is `channels` samples.
+    let level_chunk = (in_rate as usize * channels / 30).max(1);
 
     stream.play().context("could not start the input stream")?;
-    Ok(Microphone { stream, blocks, intake })
+    Ok(Microphone { stream, blocks, intake, level_chunk })
 }
 
 /// Root-mean-square of one captured block, as a 0..1 level.
@@ -769,6 +780,15 @@ impl Segmenter {
             return self.close();
         }
         None
+    }
+
+    /// Is the VAD currently inside an utterance?
+    ///
+    /// The app stops on its own after a stretch of silence, and "silence"
+    /// has to mean the VAD's opinion rather than a level threshold — otherwise
+    /// there would be two disagreeing definitions of quiet in one program.
+    pub fn is_speaking(&self) -> bool {
+        self.speaking
     }
 
     /// End the utterance in progress and hand it over, if there was one.

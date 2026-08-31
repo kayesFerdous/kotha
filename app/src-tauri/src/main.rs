@@ -106,6 +106,28 @@ const HIDE_AFTER: Duration = Duration::from_millis(1900);
 /// How often the worker checks whether the user has asked it to stop.
 const POLL: Duration = Duration::from_millis(200);
 
+/// Stop dictating after this much silence.
+///
+/// PLAN.md's description of the app has always said "press again, or stay
+/// silent for two seconds, and it fades out". The first build only had the
+/// first half, which meant that if the hotkey was missed — and on Wayland it
+/// can be — there was no way to end a dictation at all.
+///
+/// Measured from the VAD's opinion, not a level threshold, so there is one
+/// definition of quiet in the program rather than two. It has to be comfortably
+/// longer than the segmenter's own ~600 ms hangover, or it would fire between
+/// sentences.
+/// Override in seconds with `KOTHA_IDLE`; 0 disables it.
+const IDLE_STOP: Duration = Duration::from_secs(3);
+
+fn idle_stop() -> Option<Duration> {
+    let secs = std::env::var("KOTHA_IDLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(IDLE_STOP.as_secs());
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
 /// What the hotkey and the tray ask the worker to do.
 enum Cmd {
     Start,
@@ -191,7 +213,14 @@ fn main() {
                         println!("window  a moment later, at {:?}", w.outer_position());
                     }
                     thread::sleep(Duration::from_secs(6));
-                    toggle(&app);
+                    // It may already have stopped itself on silence, in which
+                    // case this would start a second one. Only stop what is
+                    // still running.
+                    if app.state::<Session>().listening.load(Ordering::SeqCst) {
+                        toggle(&app);
+                    }
+                    thread::sleep(HIDE_AFTER + Duration::from_millis(600));
+                    app.exit(0);
                 });
             }
 
@@ -252,6 +281,7 @@ fn toggle(app: &AppHandle) {
         session.listening.store(false, Ordering::SeqCst);
     }
     let cmd = if was_listening { Cmd::Stop } else { Cmd::Start };
+    println!("toggle  {}", if was_listening { "stop" } else { "start" });
     let sent = session.tx.lock().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false);
     if !sent {
         eprintln!("worker is gone — dictation is not available");
@@ -296,7 +326,7 @@ fn dictate(
     // The microphone first: a missing one should cost a millisecond, not four
     // seconds and 1.4 GB. `Microphone` is not Send under ALSA, which is the
     // other reason all of this lives on one thread.
-    let Microphone { stream, blocks, mut intake } = live::open_microphone()?;
+    let Microphone { stream, blocks, mut intake, level_chunk } = live::open_microphone()?;
     show(app);
     let _ = app.emit("kotha://state", "listening");
 
@@ -314,10 +344,14 @@ fn dictate(
 
     let mut segmenter = Segmenter::new();
     let mut n = 0usize;
+    let mut last_voice = std::time::Instant::now();
+    let mut logged_block = false;
+    let idle = idle_stop();
 
-    loop {
+    let stopped_by = loop {
         match rx.try_recv() {
-            Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Ok(Cmd::Stop) => break "hotkey",
+            Err(mpsc::TryRecvError::Disconnected) => break "shutdown",
             Ok(Cmd::Start) | Err(mpsc::TryRecvError::Empty) => {}
         }
 
@@ -326,10 +360,25 @@ fn dictate(
             // A silent room produces blocks too, so a timeout means the device
             // stopped rather than that nobody is speaking.
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break "device gone",
         };
 
-        let _ = app.emit("kotha://level", live::rms(&block));
+        if !logged_block {
+            println!(
+                "audio   {} samples per block ({:.0} ms), {} levels per block",
+                block.len(),
+                block.len() as f64 / kotha_spike::SAMPLE_RATE as f64 * 1000.0,
+                block.len().div_ceil(level_chunk).max(1)
+            );
+            logged_block = true;
+        }
+
+        // One level per ~33 ms rather than one per capture block, so the
+        // waveform moves at the same speed whatever buffer size the driver
+        // chose. See `Microphone::level_chunk`.
+        for piece in block.chunks(level_chunk) {
+            let _ = app.emit("kotha://level", live::rms(piece));
+        }
 
         // The VAD closes a chunk at every pause, so text lands while the user
         // is still talking — which is the whole reason for segmenting at all
@@ -338,8 +387,15 @@ fn dictate(
             n += 1;
             deliver(app, engine, corrector, out, n, &utterance)?;
             let _ = app.emit("kotha://state", "listening");
+            last_voice = std::time::Instant::now();
         }
-    }
+
+        if segmenter.is_speaking() {
+            last_voice = std::time::Instant::now();
+        } else if idle.is_some_and(|d| last_voice.elapsed() > d) {
+            break "silence";
+        }
+    };
 
     // Stopping mid-sentence is an ordinary thing to do. Whatever is buffered
     // gets transcribed rather than thrown away.
@@ -352,7 +408,7 @@ fn dictate(
     app.state::<Session>().listening.store(false, Ordering::SeqCst);
     let _ = app.emit("kotha://state", if n > 0 { "done" } else { "idle" });
     hide_soon(app, if n > 0 { HIDE_AFTER } else { Duration::from_millis(400) });
-    println!("stopped after {n} utterance(s)");
+    println!("stopped on {stopped_by} after {n} utterance(s)\n");
     Ok(())
 }
 
