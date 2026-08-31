@@ -246,8 +246,8 @@ Independent of the Rust work. Prototype in Python, port to Rust after.
       the English side of the **training** corpus (7,320 types) for the domain
       words a general list lacks. 50,264 entries
 - [x] SymSpell index, edit distance ≤ 2 (1.2 M delete keys)
-- [ ] Double Metaphone fallback — **still open.** It is what would reach the
-      ED 3+ tail, 15% of misspellings (`carector` → `character`)
+- [x] Double Metaphone fallback — **measured out, not built.** Its whole
+      addressable market is 17 tokens of 4,299. See below
 - [x] Tune the abstain threshold **on training-side data only**
 - [ ] Port to Rust (~200 lines)
 
@@ -310,6 +310,52 @@ looser one were chosen.
 
 **Headroom left:** 309 misspellings remain. 90% are within ED 3, so Double
 Metaphone is the next lever, then bigram context for the real-word 26%.
+
+#### Double Metaphone: measured, then dropped — 2026-08-31
+
+The plan said Double Metaphone next, because 90% of the 309 surviving
+misspellings sit within edit distance 3 and SymSpell stops at 2. That framing
+was right about edit distance and wrong about the binding constraint.
+
+`gap.py --corrected` now prints the ceiling. A fallback can only fire on a
+token **below the corrector's floor** — above it the token is protected on
+purpose, and no amount of phonetic matching changes that:
+
+| Of the 309 misspellings still standing | count | share |
+|---|---|---|
+| above the floor, protected by design | 278 | 90.0% |
+| below the floor, a fallback could act | 31 | 10.0% |
+| below the floor **and** beyond ED 2 | **17** | **5.5%** |
+
+**17 tokens out of 4,299.** Perfect correction of every one of them, with zero
+damage, is worth about +0.2 strict F1. Double Metaphone matches without an
+edit-distance bound, so zero damage is not what it would deliver — the same
+loose net that reaches `ambacerer` → `ambassador` (ED 5) reaches a great deal
+else in a 50k dictionary. Correct-or-abstain says do not take that trade for
+0.2 points.
+
+Two things are visible in the residue and worth writing down:
+
+- **The floor, not edit distance, is what is left.** 88.7% of the surviving
+  misspellings are real English words — `one`/`phone`, `letter`/`leather`,
+  `mill`/`meal`, `foster`/`coaster`. The corrector refuses them by design and
+  is right to. Unigram frequency cannot tell them apart from correct text.
+  **This is the second measurement pointing at bigram context** (Phase 7); the
+  first was `grammer`.
+- **Of the 31 touchable, 14 are within ED 2 already** and were abstained on by
+  the short-token budget (`gim` → `gym`, seven times; `ead`, `goe`, `psr` — all
+  three characters, budget 0). That guard exists to stop `hal` → `hall`, and it
+  is doing its job. If it is ever revisited, it must be swept on the **training
+  split** with `--calibrate`'s risky/benign metric, not against the list above.
+
+*Method note:* the residue was inspected on held-out output, which `gap.py`
+labels understanding-only. Nothing here changed a threshold. The one candidate
+change it suggests (the short-token budget) is deliberately left unmade for
+exactly that reason.
+
+**So Phase 1 is finished.** The corrector took +5.21 points, everything below
+the floor that ED 2 can reach is reached, and the next real lever is context,
+not a wider net.
 
 #### The gap, split — 2026-08-31
 
@@ -549,3 +595,6 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 | Strict English-F1, after corrector | **77.02** (+5.21, held out) | 2026-08-31 |
 | Non-Latin tokens modified by corrector | **0** of 393 utterances | 2026-08-31 |
 | Misspellings corrected | 236 of 545, ~91% precision | 2026-08-31 |
+| Misspellings left standing | 309 of 4,299 English tokens | 2026-08-31 |
+| ...of those, protected by the floor | **90.0%** — real words, need context | 2026-08-31 |
+| ...reachable by a phonetic fallback | **17 tokens, ~+0.2 F1** — not built | 2026-08-31 |

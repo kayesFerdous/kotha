@@ -54,6 +54,7 @@ DECODE = HERE / "decode_393.txt"
 THREADS = "6"
 
 FUZZY = 72.0  # score_utterance's default; the tolerant threshold the paper uses
+MAX_ED_REACH = 2  # SymSpell's index depth in correct.py; anything past it needs a fallback
 
 # What happened to a Latin reference token. Ordered worst-understood last.
 CATS = [
@@ -344,6 +345,25 @@ def main():
         print(f"\n  top real-word errors a dictionary cannot see:")
         for (ref_t, hyp_t), n in sorted(real.items(), key=lambda kv: -kv[1])[:12]:
             print(f"    {n:3d}  {hyp_t!r:24s} → {ref_t!r}")
+
+    # ---- what is even left for a fallback to reach? ---------------------
+    # Only a token BELOW the corrector's floor can ever be touched; above it
+    # the token is protected on purpose, and no fallback changes that. So this
+    # bounds a phonetic fallback's yield without implementing one.
+    if corrected:
+        n_all = sum(pairs.values())
+        touchable = sum(n for (_, h), n in pairs.items()
+                        if freq.get(h, 0.0) < corr.floor)
+        far = sum(n for (r, h), n in pairs.items()
+                  if freq.get(h, 0.0) < corr.floor
+                  and Levenshtein.distance(r, h) > MAX_ED_REACH)
+        print(f"\nof the {n_all} misspellings still standing after correction:")
+        print(f"  above the floor, protected by design    {n_all - touchable:4d}  "
+              f"{100 * (n_all - touchable) / n_all:5.1f}%")
+        print(f"  below the floor, a fallback could act   {touchable:4d}  "
+              f"{100 * touchable / n_all:5.1f}%   ← ceiling on ANY fallback")
+        print(f"  below the floor AND beyond ED {MAX_ED_REACH}          {far:4d}  "
+              f"{100 * far / n_all:5.1f}%   ← Double Metaphone's actual target")
 
     print(f"\ntop {n_examples} misspellings — hypothesis → reference  (understanding only,")
     print("NOT dictionary input; these are held-out test utterances)")
