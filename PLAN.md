@@ -576,8 +576,11 @@ The OS-specific part. Three mechanisms underneath.
 - [x] Restore the previous clipboard contents afterwards — in paste mode only;
       in copy-only mode the clipboard *is* the delivery, so restoring it would
       throw the transcript away
-- [x] Linux: X11 vs Wayland split — investigated, and it does not land where
-      the plan assumed. See below
+- [x] Linux: X11 vs Wayland split — three routes, one chosen at run time.
+      **libei through the desktop portal works on KDE Wayland**, verified
+      2026-08-31. See below
+- [x] Preserve whatever the user already had on the clipboard — text *or*
+      image, and never clobber a fresh copy. See below
 - [ ] macOS: Accessibility permission, synthetic ⌘V — the code path exists
       (`Key::Meta`), untested, needs the M2
 - [ ] Windows: SendInput — enigo's own path, untested
@@ -605,11 +608,34 @@ output  clipboard + synthetic paste (x11/xwayland only — native Wayland apps
         will not receive it)
 ```
 
-The remaining route for KDE is libei via the XDG RemoteDesktop portal, which
-KWin 6 does support and enigo has behind `libei_smol`/`libei_tokio`. It costs a
-permission dialog on first use, which is Phase 5's walkthrough arriving early.
-**Not attempted yet** — it puts a portal prompt on the desktop and that is
-Kayes's call to make.
+**libei through the XDG RemoteDesktop portal is the answer, and it works.**
+Verified on this machine 2026-08-31:
+
+```
+output  clipboard + synthetic paste (libei via the desktop portal —
+        reaches every window)
+```
+
+This is the sanctioned replacement for what X11 used to give away freely: the
+same ability to synthesise input, but granted by the user through a system
+dialog instead of taken. It reaches native Wayland windows, which XTEST cannot.
+
+So Linux has three routes, and the binary picks one and names it:
+
+| route | reaches | costs |
+|---|---|---|
+| `KOTHA_PASTE=portal` — **libei** | every window | one permission dialog |
+| `KOTHA_PASTE=1` — wayland virtual keyboard | every window | nothing, but wlroots only |
+| `KOTHA_PASTE=1` — x11 XTEST *(KDE's fallback)* | XWayland clients only | nothing |
+| unset — clipboard only *(default)* | everywhere, user presses paste | nothing |
+
+**One caveat on the dialog.** enigo asks the portal for
+`PersistMode::Application` and passes no `restore_token` (there is a `TODO` in
+`linux/libei.rs` for it), so the grant lasts the process's lifetime, not across
+restarts. Kotha is a tray app started once at login, so in practice that is one
+dialog per login rather than per dictation — acceptable, but **worth fixing
+before shipping**, and it needs either an enigo patch or driving `ashpd`
+directly to save and replay the restore token.
 
 **2. enigo sends every keystroke through *all* its live connections**, not the
 first that works (`linux/mod.rs`, `impl Keyboard for Enigo`). A session with
@@ -625,6 +651,36 @@ paste, and the binary says which it got.
 
 *Neither of these is a reason to change the clipboard-and-paste design.* The
 clipboard half works everywhere, needs no permission, and is the default.
+
+#### What happens to what you already had on the clipboard
+
+Pasting means *owning* the clipboard, so whatever the user copied has to be
+displaced for a moment. Getting that wrong is what makes an app feel
+untrustworthy: you copy a link, dictate a sentence, and the link is gone.
+
+`Borrowed` takes it, holds it, and gives it back:
+
+- **Text and images both.** A copied screenshot is an ordinary thing to have,
+  and losing it to a dictation would cost more than the dictation was worth.
+- **A fresh copy is never clobbered.** The old contents go back only if our
+  dictated text is *still* what is on the clipboard. If the user copied
+  something during the paste, that is theirs and it stays.
+- **What cannot be saved is reported, not silently destroyed.** A file list or
+  an app-private format cannot be read back, and pasting overwrites it either
+  way — so the app says so rather than pretending nothing happened.
+- **In copy-only mode nothing is restored at all**, because there the clipboard
+  *is* the delivery: putting the old contents back would throw the transcript
+  away.
+
+The one soft spot is timing. There is no portable way to be told "the paste has
+been read" — on Wayland our own process serves the selection, but arboard does
+not surface that request — so the hand-back waits a fixed 400 ms. That errs
+long deliberately: restoring too early would make the target paste the
+*previous* text, which is worse than never restoring. 400 ms is invisible next
+to a multi-second decode.
+
+`cargo test --bin live` covers both halves against the real system clipboard:
+that it is restored, and that a fresh copy survives.
 
 ---
 
@@ -649,7 +705,7 @@ Where "easy to start" is won or lost.
 - [ ] Model download: 778 MB, resumable, progress bar, checksum
 - [ ] Permission walkthrough with buttons that open the right settings panel
 - [ ] A short "press this key and talk" demo
-- [ ] Settings: hotkey, microphone, paste mode
+- [ ] Settings: hotkey, microphone, paste mode (clipboard / paste / portal)
 
 **Accept when:** a fresh user account gets from downloaded installer to first
 dictated sentence without reading anything.
@@ -668,6 +724,11 @@ dictated sentence without reading anything.
 
 ### Phase 7 — Polish
 
+- [ ] **The dashboard.** A real settings window, not just a tray menu — the
+      home for everything below. Phase 5 ships the minimum (hotkey, microphone,
+      paste mode); this is where it grows up
+- [ ] Choose a different Whisper model
+- [ ] Language mode: code-switched (default) / English only / Bangla only
 - [ ] Push-to-talk as an alternative to toggle
 - [ ] History window
 - [ ] Start/stop sounds
