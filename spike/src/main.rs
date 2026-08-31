@@ -33,11 +33,12 @@
 //! and call `ct2rs::sys::Whisper`, which takes features directly. The result is
 //! bit-exact against Whisper's reference — run `check_mel.py` to confirm.
 //!
-//! Output is still not byte-identical to `results/cpu_bench.json`, because that
-//! baseline used faster-whisper's default temperature-fallback ladder and
-//! timestamp prompt, while this is one deterministic greedy pass. See PLAN.md,
-//! "Why the strings still differ". That is a decode-policy difference, not a
-//! defect — dictation wants the deterministic pass.
+//! Against a faster-whisper baseline decoded with matching settings, the two
+//! agree on 99.27% of characters — audio, features and library version are all
+//! identical, and the remainder traces to MKL vs oneDNN kernels. Do NOT diff
+//! against `results/cpu_bench.json`: that used faster-whisper's default
+//! temperature-fallback ladder, which samples, and is not reproducible even
+//! against itself. `gate.py --baseline matched` builds the right comparison.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
