@@ -25,6 +25,7 @@ earshot = "1.2.2"
 num_cpus = "1.17.0"
 rubato = { version = "5.0.0", default-features = false, features = ["fft_resampler"] }
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+enigo = { version = "0.6.1", features = ["wayland"] }
 
 # The int8 GEMM backend is target-specific, and getting it wrong costs ~2x.
 #

@@ -566,22 +566,65 @@ file mode is for.
 
 ---
 
-### Phase 3 — Text at the cursor
+### Phase 3 — Text at the cursor  ⟵ IN PROGRESS
 
 The OS-specific part. Three mechanisms underneath.
 
-- [ ] macOS: Accessibility permission, synthetic ⌘V
-- [ ] Windows: SendInput
-- [ ] Linux: X11 vs Wayland split
-- [ ] **Copy-only mode that needs no permissions**, so the app is useful before
-      anything is granted
-- [ ] Restore the previous clipboard contents afterwards
+- [x] **Copy-only mode that needs no permissions**, so the app is useful before
+      anything is granted — and it is the *default*, because firing synthetic
+      keystrokes into whatever window is focused should be asked for
+- [x] Restore the previous clipboard contents afterwards — in paste mode only;
+      in copy-only mode the clipboard *is* the delivery, so restoring it would
+      throw the transcript away
+- [x] Linux: X11 vs Wayland split — investigated, and it does not land where
+      the plan assumed. See below
+- [ ] macOS: Accessibility permission, synthetic ⌘V — the code path exists
+      (`Key::Meta`), untested, needs the M2
+- [ ] Windows: SendInput — enigo's own path, untested
+- [ ] Verify it in a real editor
 
 **Accept when:** dictated text appears in TextEdit, a browser field, and a
-terminal, without the focused window changing.
+terminal, without the focused window changing. **Not yet met** — see the
+Wayland finding.
 
 **Why clipboard and not keystrokes:** Bengali conjuncts and combining marks
 break character-by-character injection in many apps. A paste is atomic.
+
+#### What Linux actually does — 2026-08-31, KDE Plasma 6 / kwin_wayland
+
+Two findings, both of which change what can be promised on Linux.
+
+**1. KWin does not offer `zwp_virtual_keyboard_v1`.** Built against enigo's
+`wayland` backend alone, `Enigo::new()` fails outright: *no successful
+connection*. So on KDE Wayland the only route is XTEST through XWayland, and
+**a synthetic paste reaches XWayland clients but not native Wayland ones.**
+The app reports this rather than pretending otherwise:
+
+```
+output  clipboard + synthetic paste (x11/xwayland only — native Wayland apps
+        will not receive it)
+```
+
+The remaining route for KDE is libei via the XDG RemoteDesktop portal, which
+KWin 6 does support and enigo has behind `libei_smol`/`libei_tokio`. It costs a
+permission dialog on first use, which is Phase 5's walkthrough arriving early.
+**Not attempted yet** — it puts a portal prompt on the desktop and that is
+Kayes's call to make.
+
+**2. enigo sends every keystroke through *all* its live connections**, not the
+first that works (`linux/mod.rs`, `impl Keyboard for Enigo`). A session with
+both a Wayland and an XWayland connection therefore pastes **twice** — silently,
+and only on some compositors. KDE is safe by accident, because its Wayland
+connection never opens; **wlroots compositors (Sway, Hyprland) are not.**
+
+`Settings` has no switch to disable a backend, and the session is a runtime fact
+while enigo's backends are compile-time features. So `connect_keyboard()` picks
+exactly one by pointing the unwanted backend at a display name that cannot
+exist: Wayland first on a Wayland session, X11 otherwise. One connection, one
+paste, and the binary says which it got.
+
+*Neither of these is a reason to change the clipboard-and-paste design.* The
+clipboard half works everywhere, needs no permission, and is the default.
 
 ---
 
