@@ -41,7 +41,9 @@ from pathlib import Path
 ASR = Path.home() / "Documents/ASR"
 BENCH = ASR / "results/cpu_bench.json"
 CHUNKS = ASR / "bangla-asr-test/chunks/test"
-SPIKE = Path(__file__).parent / "target/release/kotha-spike"
+# The workspace shares one target directory at the repo root, so
+# CTranslate2 is compiled once rather than once per crate.
+SPIKE = Path(__file__).parent.parent / "target/release/kotha-spike"
 MODEL = Path(__file__).parent.parent / "models/whisper-medium-bn-en-cs-faster"
 CONFIG = "int8, 6 threads"   # the stored-baseline config to diff against
 THREADS = "6"

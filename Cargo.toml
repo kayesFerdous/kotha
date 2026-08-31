@@ -1,0 +1,12 @@
+# One workspace, so the app and the spike share a target directory.
+#
+# That matters here more than usual: CTranslate2 is a long C++ compile, and a
+# second target dir would mean paying for it twice. The spike is still its own
+# crate because the Phase 0 gate and check_mel.py are how the engine stays
+# honest, and those need to keep running after the app absorbs the engine.
+[workspace]
+resolver = "2"
+members  = ["spike", "app/src-tauri"]
+
+[profile.release]
+opt-level = 3

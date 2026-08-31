@@ -31,3 +31,6 @@ __pycache__/
 
 # Session handoff notes — PLAN.md is the durable copy
 HANDOFF-PROMPT.md
+
+# Tauri's generated schemas
+app/src-tauri/gen/

@@ -48,7 +48,9 @@ HERE = Path(__file__).parent
 MANIFEST = ASR / "bangla-asr-test/test_manifest.csv"
 LEXICON = ASR / "bangla-asr-test/listen_v13/lexicon.csv"
 CHUNKS = ASR / "bangla-asr-test/chunks/test"
-SPIKE = HERE / "target/release/kotha-spike"
+# The workspace shares one target directory at the repo root, so
+# CTranslate2 is compiled once rather than once per crate.
+SPIKE = HERE.parent / "target/release/kotha-spike"
 MODEL = HERE.parent / "models/whisper-medium-bn-en-cs-faster"
 DECODE = HERE / "decode_393.txt"
 THREADS = "6"

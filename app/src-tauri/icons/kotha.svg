@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- The pill's own waveform, standing in for the app. Same marks, same
+       dark capsule, so the tray icon and the thing on screen are obviously
+       the same object. -->
+  <rect width="512" height="512" rx="114" fill="#18181b"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="112.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.14" stroke-width="3"/>
+  <g fill="#ffffff">
+    <rect x="104" y="240" width="24" height="32"  rx="12"/>
+    <rect x="148" y="204" width="24" height="104" rx="12"/>
+    <rect x="192" y="152" width="24" height="208" rx="12"/>
+    <rect x="236" y="116" width="24" height="280" rx="12"/>
+    <rect x="280" y="172" width="24" height="168" rx="12"/>
+    <rect x="324" y="220" width="24" height="72"  rx="12"/>
+    <rect x="368" y="240" width="24" height="32"  rx="12"/>
+  </g>
+</svg>

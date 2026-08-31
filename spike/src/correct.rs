@@ -13,6 +13,10 @@
 //! correct.py     < normalised.txt        # the prototype
 //! ```
 //!
+//! Over the 393 held-out hypotheses the two agree on every line but one, and
+//! that one is not a disagreement about spelling — it is an exact tie. See
+//! `Corrector::words` for why this file is the deterministic half of the pair.
+//!
 //! # The dictionary is baked in
 //!
 //! `build_dictionary()` in the prototype reads `wordfreq` and the training
@@ -98,9 +102,21 @@ struct Entry {
 
 pub struct Corrector {
     /// Sorted by word, so exact lookup is a binary search and the candidate
-    /// scan is deterministic (the prototype iterates a Python set, so its
-    /// tie-breaking between two candidates at the same distance *and* the same
-    /// frequency is arbitrary; ours takes the alphabetically first).
+    /// scan is deterministic.
+    ///
+    /// That last part is not incidental. The prototype iterates a Python
+    /// *set*, so when two candidates tie on both edit distance and frequency
+    /// it keeps whichever the set happened to yield first — which depends on
+    /// the process's string-hash seed. Measured across six seeds on the 393:
+    /// `yeas` becomes `years` on three of them and `year` on the other three,
+    /// and it is the only token in the whole test set where they can differ.
+    /// This scan walks the dictionary in order and takes the alphabetically
+    /// first, every time.
+    ///
+    /// Neither answer is better. `year` and `years` are both edit distance 1
+    /// from `yeas` and both sit at zipf 5.96; unigram frequency cannot
+    /// separate them and nothing at this floor can. It is the same finding as
+    /// `grammer` and `mill` — the next lever is context, not a wider net.
     words: Vec<Entry>,
     floor: f32,
     margin: f32,
@@ -334,6 +350,14 @@ mod tests {
         // Real fixes from the 393, at the two edit distances that matter.
         assert_eq!(c.correct_token("annother"), "another");
         assert_eq!(c.correct_token("colloberation"), "collaboration");
+
+        // Ties are broken deterministically, alphabetically. `year` and
+        // `years` are both ED 1 from `yeas` and both zipf 5.96; the prototype
+        // picks between them by hash order. This is the one token in the 393
+        // where the two implementations can disagree, and it is a coin flip,
+        // not a defect.
+        assert_eq!(c.correct_token("yeas"), "year");
+        assert_eq!(c.zipf("year"), c.zipf("years"));
 
         // NOT a guarantee, recorded because it is easy to mistake for one:
         // against the real dictionary `carector` becomes `creator` (ED 2), not
