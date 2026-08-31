@@ -10,6 +10,7 @@
 //! proof of that and must be re-run after any edit to this file.
 
 pub mod correct;
+pub mod live;
 
 use std::path::Path;
 

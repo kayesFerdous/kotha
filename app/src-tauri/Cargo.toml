@@ -10,3 +10,11 @@ tauri-build = "2"
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+
+# The whole pipeline — engine, VAD, segmenter, corrector, clipboard — already
+# lives here and is already measured. The app drives it rather than
+# reimplementing it; that is why `live.rs` was promoted from a binary to a
+# library module. Renaming this crate is Phase 6 work.
+kotha-spike = { path = "../../spike" }
+anyhow = "1"
+cpal = "0.18.2"

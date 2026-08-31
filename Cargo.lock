@@ -2687,6 +2687,9 @@ dependencies = [
 name = "kotha"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "cpal",
+ "kotha-spike",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",

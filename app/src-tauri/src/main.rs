@@ -18,10 +18,10 @@
 //! two-minute build here and a ten-minute one once the engine is attached, so
 //! it happens here first.
 //!
-//! **The audio is fake.** `fake_level` stands in for the microphone so this
-//! binary does not pull in `ct2rs`. The next commit replaces it with the real
-//! cpal → VAD → Engine → corrector → clipboard chain out of `spike/`, which is
-//! already written and already measured; nothing about that chain is in doubt.
+//! The chain behind it is the real one. `kotha_spike::live` supplies the
+//! microphone, the VAD, the segmenter and the clipboard, and `Engine` and
+//! `Corrector` do the rest — the same code the Phase 0 gate measured and the
+//! Phase 2 loop ran, driven from here instead of from a terminal.
 //!
 //! Run it:
 //!
@@ -30,10 +30,26 @@
 //! ```
 //!
 //! Then press Ctrl+Alt+Space, or use the tray icon.
+//!
+//! Environment:
+//!
+//! ```text
+//! KOTHA_MODEL    the CTranslate2 model directory. Until Phase 5 downloads it,
+//!                this defaults to ./models/whisper-medium-bn-en-cs-faster.
+//! KOTHA_THREADS  decode threads (default: physical cores).
+//! KOTHA_PASTE    unset = clipboard only, 1 = synthetic paste, portal = libei.
+//! ```
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use kotha_spike::correct::Corrector;
+use kotha_spike::live::{self, Microphone, Output, Segmenter};
+use kotha_spike::{suspicious_fusion, Engine};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -43,9 +59,12 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// PLAN.md's proposal, not yet final.
 const HOTKEY: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::Space);
 
-/// Microphone frames per second sent to the UI. Fast enough that the waveform
-/// reads as continuous, slow enough to be free.
-const FPS: u64 = 30;
+/// Where the model lives until Phase 5 downloads it for the user.
+fn model_dir() -> PathBuf {
+    std::env::var_os("KOTHA_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "models/whisper-medium-bn-en-cs-faster".into())
+}
 
 /// The pill's window, in logical pixels.
 ///
@@ -84,21 +103,31 @@ fn bottom_margin() -> f64 {
 /// compositing. If the pill ever vanishes mid-tick, this is why.
 const HIDE_AFTER: Duration = Duration::from_millis(1900);
 
-/// Stands in for a decode, so the `thinking` state lasts long enough to look at.
-const FAKE_DECODE: Duration = Duration::from_millis(1600);
+/// How often the worker checks whether the user has asked it to stop.
+const POLL: Duration = Duration::from_millis(200);
 
-/// Is a dictation in progress? The whole of the app's state, for now.
-#[derive(Default)]
+/// What the hotkey and the tray ask the worker to do.
+enum Cmd {
+    Start,
+    Stop,
+}
+
+/// The app's state: whether a dictation is running, and how to reach the
+/// worker that runs it.
 struct Session {
     listening: AtomicBool,
+    /// `mpsc::Sender` is `Send` but not `Sync`, and Tauri state must be both.
+    tx: Mutex<mpsc::Sender<Cmd>>,
 }
 
 fn main() {
     prefer_x11();
 
+    let (tx, rx) = mpsc::channel::<Cmd>();
+
     tauri::Builder::default()
-        .manage(Session::default())
-        .setup(|app| {
+        .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
+        .setup(move |app| {
             let pill = app
                 .get_webview_window("pill")
                 .expect("no window labelled `pill` — check tauri.conf.json");
@@ -137,10 +166,18 @@ fn main() {
                 ),
             }
 
-            // KOTHA_DEMO=1 runs one dictation on its own, a second after
-            // startup. The window questions this gate exists to answer need
-            // the pill actually on screen, and the hotkey may be exactly the
-            // thing that is broken — so the gate must not depend on it.
+            // One long-lived worker owns the engine, so the model is loaded
+            // once and stays warm across dictations — which is exactly what
+            // Phase 2's acceptance test was about. It also means the engine
+            // never crosses a thread boundary after it is built.
+            let handle = app.handle().clone();
+            thread::spawn(move || worker(handle, rx));
+
+            // KOTHA_DEMO=1 records a fixed-length dictation on its own, a
+            // second after startup. The window questions this gate was built
+            // to answer need the pill actually on screen, and the hotkey may
+            // be exactly the thing that is broken — so it must not depend on
+            // the hotkey.
             if std::env::var("KOTHA_DEMO").is_ok() {
                 let app = app.handle().clone();
                 thread::spawn(move || {
@@ -153,10 +190,8 @@ fn main() {
                     if let Some(w) = app.get_webview_window("pill") {
                         println!("window  a moment later, at {:?}", w.outer_position());
                     }
-                    thread::sleep(Duration::from_secs(4));
+                    thread::sleep(Duration::from_secs(6));
                     toggle(&app);
-                    thread::sleep(FAKE_DECODE + HIDE_AFTER + Duration::from_millis(600));
-                    app.exit(0);
                 });
             }
 
@@ -205,73 +240,201 @@ fn prefer_x11() {
 fn prefer_x11() {}
 
 /// Start or stop a dictation. The hotkey and the tray both land here.
+///
+/// This does no work itself: it flips the flag the worker is watching and
+/// pokes the channel. Everything slow — opening the microphone, loading the
+/// model, decoding — happens on the worker, because this runs on the UI thread
+/// and a frozen pill is worse than no pill.
 fn toggle(app: &AppHandle) {
     let session = app.state::<Session>();
-
-    if session.listening.swap(false, Ordering::SeqCst) {
-        // Stopping: the model would now be decoding.
-        let _ = app.emit("kotha://state", "thinking");
-        let app = app.clone();
-        thread::spawn(move || {
-            // ponytail: a sleep where the decode goes. The real chain — VAD,
-            // Engine, corrector, clipboard — is written and measured in
-            // spike/src/bin/live.rs and drops in here next.
-            thread::sleep(FAKE_DECODE);
-            let _ = app.emit("kotha://state", "done");
-            thread::sleep(HIDE_AFTER);
-            if let Some(w) = app.get_webview_window("pill") {
-                let _ = w.hide();
-            }
-        });
-        return;
+    let was_listening = session.listening.swap(true, Ordering::SeqCst);
+    if was_listening {
+        session.listening.store(false, Ordering::SeqCst);
     }
-
-    session.listening.store(true, Ordering::SeqCst);
-    if let Some(w) = app.get_webview_window("pill") {
-        // Placement is re-applied on every show: the pill should follow the
-        // screen the user is actually on, and monitors come and go.
-        let _ = place(&w);
-        let _ = w.show();
-
-        // Click-through, so the pill is furniture and not an obstacle.
-        //
-        // This has to happen *after* the first show, not in setup(). tao
-        // 0.35.3 handles the request with `window.window().unwrap()`
-        // (linux/event_loop.rs:457) — the GDK window, which does not exist
-        // until GTK realises the widget. A window created `visible: false`
-        // has not been realised, so asking in setup() aborts the process from
-        // inside the GTK main loop, where it cannot even unwind. Silent until
-        // it is fatal, and worth reporting upstream: the code already has the
-        // Option in hand.
-        let _ = w.set_ignore_cursor_events(true);
-        // The property the whole feature rests on. Self-reported by the
-        // toolkit, so it is evidence rather than proof, but a `true` here
-        // would be conclusive the other way.
-        println!(
-            "window  shown, focused = {:?}, at {:?}",
-            w.is_focused(),
-            w.outer_position()
-        );
+    let cmd = if was_listening { Cmd::Stop } else { Cmd::Start };
+    let sent = session.tx.lock().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false);
+    if !sent {
+        eprintln!("worker is gone — dictation is not available");
     }
-    let _ = app.emit("kotha://state", "listening");
-
-    let app = app.clone();
-    thread::spawn(move || {
-        let start = Instant::now();
-        while app.state::<Session>().listening.load(Ordering::SeqCst) {
-            let _ = app.emit("kotha://level", fake_level(start.elapsed().as_secs_f32()));
-            thread::sleep(Duration::from_millis(1000 / FPS));
-        }
-    });
 }
 
-/// A plausible speech envelope, so the waveform can be judged before the
-/// microphone is wired up. Replaced by the RMS of each real audio frame.
-fn fake_level(t: f32) -> f32 {
-    let syllable = (t * 5.5).sin().powi(2) - 0.08;
-    let tremor = 0.75 + 0.25 * (t * 21.0).sin();
-    let breath = if t % 4.2 < 0.55 { 0.06 } else { 1.0 };
-    (syllable.max(0.0) * tremor * breath * 0.22).max(0.0)
+/// The worker thread: one engine, loaded once, for the life of the process.
+fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
+    let threads = live::decode_threads();
+
+    let corrector = Corrector::new();
+    let mut out = Output::open(live::paste_mode());
+    let mut engine: Option<Engine> = None;
+
+    while let Ok(cmd) = rx.recv() {
+        // A Stop with nothing running is ordinary — the dictation may have
+        // already ended on its own. Ignore it rather than treating it as an
+        // error.
+        if !matches!(cmd, Cmd::Start) {
+            continue;
+        }
+        if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
+            // Never leave the pill up on a failure: the user pressed a key and
+            // deserves to be told, not to be left looking at a frozen pill.
+            eprintln!("dictation failed: {e:#}");
+            app.state::<Session>().listening.store(false, Ordering::SeqCst);
+            let _ = app.emit("kotha://state", "idle");
+            hide_soon(&app, Duration::ZERO);
+        }
+    }
+}
+
+/// One dictation, start to finish, on the worker thread.
+fn dictate(
+    app: &AppHandle,
+    rx: &mpsc::Receiver<Cmd>,
+    engine: &mut Option<Engine>,
+    corrector: &Corrector,
+    out: &mut Output,
+    threads: usize,
+) -> anyhow::Result<()> {
+    // The microphone first: a missing one should cost a millisecond, not four
+    // seconds and 1.4 GB. `Microphone` is not Send under ALSA, which is the
+    // other reason all of this lives on one thread.
+    let Microphone { stream, blocks, mut intake } = live::open_microphone()?;
+    show(app);
+    let _ = app.emit("kotha://state", "listening");
+
+    // Loaded on first use rather than at startup: a tray app that has not
+    // dictated yet has no business holding 1.4 GB resident.
+    if engine.is_none() {
+        let t = std::time::Instant::now();
+        let dir = model_dir();
+        *engine = Some(Engine::load(&dir, threads).map_err(|e| {
+            e.context(format!("could not load the model from {}", dir.display()))
+        })?);
+        println!("model   {} threads, loaded in {:.1}s", threads, t.elapsed().as_secs_f64());
+    }
+    let engine = engine.as_ref().expect("just loaded");
+
+    let mut segmenter = Segmenter::new();
+    let mut n = 0usize;
+
+    loop {
+        match rx.try_recv() {
+            Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => break,
+            Ok(Cmd::Start) | Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        let block = match blocks.recv_timeout(POLL) {
+            Ok(b) => b,
+            // A silent room produces blocks too, so a timeout means the device
+            // stopped rather than that nobody is speaking.
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        let _ = app.emit("kotha://level", live::rms(&block));
+
+        // The VAD closes a chunk at every pause, so text lands while the user
+        // is still talking — which is the whole reason for segmenting at all
+        // at 1.5x realtime.
+        for utterance in intake.feed(&block, &mut segmenter)? {
+            n += 1;
+            deliver(app, engine, corrector, out, n, &utterance)?;
+            let _ = app.emit("kotha://state", "listening");
+        }
+    }
+
+    // Stopping mid-sentence is an ordinary thing to do. Whatever is buffered
+    // gets transcribed rather than thrown away.
+    drop(stream);
+    if let Some(tail) = segmenter.flush() {
+        n += 1;
+        deliver(app, engine, corrector, out, n, &tail)?;
+    }
+
+    app.state::<Session>().listening.store(false, Ordering::SeqCst);
+    let _ = app.emit("kotha://state", if n > 0 { "done" } else { "idle" });
+    hide_soon(app, if n > 0 { HIDE_AFTER } else { Duration::from_millis(400) });
+    println!("stopped after {n} utterance(s)");
+    Ok(())
+}
+
+/// Transcribe one utterance, repair its English, and put it where the user
+/// asked for it.
+fn deliver(
+    app: &AppHandle,
+    engine: &Engine,
+    corrector: &Corrector,
+    out: &mut Output,
+    n: usize,
+    utterance: &[f32],
+) -> anyhow::Result<()> {
+    let secs = utterance.len() as f64 / kotha_spike::SAMPLE_RATE as f64;
+    let _ = app.emit("kotha://state", "thinking");
+
+    let t = std::time::Instant::now();
+    let text = engine.transcribe(utterance)?;
+    let took = t.elapsed().as_secs_f64();
+    let text = text.trim();
+
+    println!("[{n}] {secs:.1}s audio → {took:.1}s decode ({:.2}x realtime)", secs / took);
+    println!("    {text}");
+    if let Some(w) = suspicious_fusion(text) {
+        eprintln!("    ⚠ {w} — check suppress_tokens");
+    }
+
+    let fixed = corrector.correct_text(text);
+    if fixed != text {
+        println!("  → {fixed}");
+    }
+    out.deliver(&fixed);
+    println!();
+    Ok(())
+}
+
+/// Put the pill on screen, wherever the user's screen currently is.
+///
+/// Placement is re-applied on every show: monitors come and go, and the pill
+/// should appear on the one being looked at.
+fn show(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("pill") else {
+        return;
+    };
+    let _ = place(&w);
+    let _ = w.show();
+
+    // Click-through, so the pill is furniture and not an obstacle.
+    //
+    // This has to happen *after* the first show, not in setup(). tao 0.35.3
+    // handles the request with `window.window().unwrap()`
+    // (linux/event_loop.rs:457) — the GDK window, which does not exist until
+    // GTK realises the widget. A window created `visible: false` has not been
+    // realised, so asking in setup() aborts the process from inside the GTK
+    // main loop, where it cannot even unwind. Silent until it is fatal, and
+    // worth reporting upstream: the code already has the Option in hand.
+    let _ = w.set_ignore_cursor_events(true);
+
+    // The property the whole feature rests on. Self-reported by the toolkit,
+    // so it is evidence rather than proof, but a `true` here would be
+    // conclusive the other way.
+    println!("window  shown, focused = {:?}", w.is_focused());
+}
+
+/// Hide the pill once the UI has finished saying goodbye.
+///
+/// Spawned rather than slept inline, so the worker is free to accept the next
+/// dictation immediately — pressing the hotkey again during the fade-out
+/// should start recording, not queue behind an animation.
+fn hide_soon(app: &AppHandle, after: Duration) {
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(after);
+        // Someone may have started dictating again while we waited. If so the
+        // pill is theirs now, and hiding it would be wrong.
+        if app.state::<Session>().listening.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Some(w) = app.get_webview_window("pill") {
+            let _ = w.hide();
+        }
+    });
 }
 
 /// Bottom centre of whichever monitor the window is currently on.
