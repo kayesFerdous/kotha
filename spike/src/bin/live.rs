@@ -39,10 +39,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use kotha_spike::{suspicious_fusion, Engine, N_SAMPLES, SAMPLE_RATE};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::audioadapter_buffers::owned::InterleavedOwned;
@@ -74,6 +75,22 @@ const MIN_VOICED: usize = 19; // ~300 ms
 /// split on *some* boundary rather than truncated inside the model.
 const MAX_SAMPLES: usize = N_SAMPLES - SAMPLE_RATE as usize * 5; // 25 s
 
+/// The chord that means "paste" on this platform.
+#[cfg(target_os = "macos")]
+const PASTE_MODIFIER: Key = Key::Meta; // ⌘V
+#[cfg(not(target_os = "macos"))]
+const PASTE_MODIFIER: Key = Key::Control; // Ctrl+V
+
+/// How long the target application gets to read the clipboard before the
+/// previous contents go back.
+///
+// ponytail: a fixed delay, not a handshake. There is no portable way to be told
+// "the paste has been read", and on Wayland our own process serves the
+// selection — so restoring too early makes the target paste the *previous*
+// text, which is worse than never restoring at all. 250 ms is generous for a
+// local paste. Raise it if a slow application ever pastes stale text.
+const PASTE_SETTLE: Duration = Duration::from_millis(250);
+
 fn main() -> Result<()> {
     let model_dir: PathBuf = std::env::args()
         .nth(1)
@@ -95,6 +112,12 @@ fn main() -> Result<()> {
     }
 }
 
+/// Synthetic input is opt-in. Sending keystrokes into whichever window happens
+/// to be focused is not something a spike should do because it was started.
+fn want_paste() -> bool {
+    matches!(std::env::var("KOTHA_PASTE").as_deref(), Ok("1") | Ok("true"))
+}
+
 /// Load the model, print what it cost. Shared so both modes prove the same
 /// thing: one load, many utterances.
 fn warm_up(model_dir: &Path, threads: usize) -> Result<Engine> {
@@ -107,12 +130,7 @@ fn warm_up(model_dir: &Path, threads: usize) -> Result<Engine> {
 }
 
 /// Transcribe one segmented utterance and report it.
-fn emit(
-    engine: &Engine,
-    clipboard: Option<&mut arboard::Clipboard>,
-    n: usize,
-    utterance: &[f32],
-) -> Result<()> {
+fn emit(engine: &Engine, out: &mut Output, n: usize, utterance: &[f32]) -> Result<()> {
     let secs = utterance.len() as f64 / SAMPLE_RATE as f64;
     let t = Instant::now();
     let text = engine.transcribe(utterance)?;
@@ -126,25 +144,150 @@ fn emit(
     if let Some(w) = suspicious_fusion(text) {
         eprintln!("    ⚠ {w} — check suppress_tokens");
     }
-    if let (Some(c), false) = (clipboard, text.is_empty()) {
-        if let Err(e) = c.set_text(text) {
-            eprintln!("    clipboard write failed: {e}");
-        }
-    }
+    out.deliver(text);
     println!();
     Ok(())
 }
 
-/// The clipboard is optional on purpose: printing is what Phase 2 gates, and an
-/// unavailable clipboard should not cost you the transcript.
-fn open_clipboard() -> Option<arboard::Clipboard> {
-    match arboard::Clipboard::new() {
-        Ok(c) => Some(c),
-        Err(e) => {
-            eprintln!("clipboard unavailable ({e}); printing only\n");
-            None
+/// Where dictated text goes — Phase 3.
+///
+/// Two modes, and the fallback matters as much as the mechanism:
+///
+///   **copy**   The clipboard and nothing else. Needs no permission on any
+///              platform and cannot fail for permission reasons; the user
+///              presses paste. This is what the app does before anything has
+///              been granted, and what it degrades to when injection is
+///              refused. Default here, because firing synthetic keystrokes into
+///              whatever window happens to be focused should be asked for.
+///
+///   **paste**  The clipboard plus a synthetic paste, with the previous
+///              clipboard contents put back afterwards. `KOTHA_PASTE=1`.
+///
+/// A paste and not per-character typing, because Bengali conjuncts and
+/// combining marks break character-by-character injection in many applications
+/// (CLAUDE.md §3). A paste is atomic.
+struct Output {
+    clipboard: Option<arboard::Clipboard>,
+    keyboard: Option<Enigo>,
+}
+
+impl Output {
+    fn open(paste: bool) -> Self {
+        let clipboard = match arboard::Clipboard::new() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                // Not fatal. Printing is what Phase 2 gates, and an unavailable
+                // clipboard should not cost you the transcript.
+                eprintln!("clipboard unavailable ({e}); printing only");
+                None
+            }
+        };
+
+        let mut how = "";
+        let keyboard = paste.then(connect_keyboard).and_then(|r| match r {
+            Ok((k, backend)) => {
+                how = backend;
+                Some(k)
+            }
+            Err(e) => {
+                eprintln!("synthetic paste unavailable ({e})");
+                eprintln!("        falling back to clipboard only — press paste \
+                           yourself, nothing is lost");
+                None
+            }
+        });
+
+        match (&clipboard, &keyboard) {
+            (Some(_), Some(_)) => println!("output  clipboard + synthetic paste ({how})"),
+            (Some(_), None) => {
+                println!("output  clipboard only (KOTHA_PASTE=1 to paste at the cursor)")
+            }
+            (None, _) => println!("output  terminal only"),
+        }
+        Self { clipboard, keyboard }
+    }
+
+    fn deliver(&mut self, text: &str) {
+        let Some(cb) = self.clipboard.as_mut() else { return };
+        if text.is_empty() {
+            return;
+        }
+
+        let Some(kb) = self.keyboard.as_mut() else {
+            // Copy-only: the clipboard IS the delivery, so it is not restored.
+            if let Err(e) = cb.set_text(text) {
+                eprintln!("    clipboard write failed: {e}");
+            }
+            return;
+        };
+
+        let previous = cb.get_text().ok();
+        if let Err(e) = cb.set_text(text) {
+            eprintln!("    clipboard write failed: {e}; not pasting");
+            return;
+        }
+        if let Err(e) = paste_chord(kb) {
+            // Leave our text on the clipboard rather than restoring: the paste
+            // did not happen, so the user still needs something to paste.
+            eprintln!("    paste failed: {e}; the text is on the clipboard");
+            return;
+        }
+        std::thread::sleep(PASTE_SETTLE);
+        if let Some(p) = previous {
+            let _ = cb.set_text(&p);
         }
     }
+}
+
+/// Connect to exactly one input backend, and say which.
+///
+/// enigo sends every keystroke through *all* the connections it managed to
+/// open, not the first that works. A Linux session with both a Wayland and an
+/// XWayland connection live therefore pastes **twice** — silently, and only on
+/// some compositors, which is the worst way for a bug like this to behave.
+///
+/// The session is a runtime fact and enigo's backends are compile-time
+/// features, and `Settings` has no switch to turn one off. So the choice is
+/// made here by pointing the unwanted backend at a display that cannot exist.
+///
+/// Measured on KDE Plasma 6 / kwin_wayland, 2026-08-31: KWin does **not** offer
+/// `zwp_virtual_keyboard_v1`, so the Wayland attempt fails and this falls
+/// through to X11 — where the paste reaches XWayland clients but not native
+/// Wayland ones. wlroots compositors (Sway, Hyprland) do offer it, and there
+/// the first attempt wins and reaches everything.
+#[cfg(target_os = "linux")]
+fn connect_keyboard() -> Result<(Enigo, &'static str), enigo::NewConError> {
+    // A display name no socket will ever have, used to veto a backend.
+    let nowhere = || Some("kotha-no-such-display".to_string());
+
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        let wayland_only = Settings {
+            x11_display: nowhere(),
+            ..Default::default()
+        };
+        if let Ok(k) = Enigo::new(&wayland_only) {
+            return Ok((k, "wayland"));
+        }
+    }
+    let x11_only = Settings {
+        wayland_display: nowhere(),
+        ..Default::default()
+    };
+    Enigo::new(&x11_only).map(|k| (k, "x11/xwayland only — native Wayland apps will not receive it"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn connect_keyboard() -> Result<(Enigo, &'static str), enigo::NewConError> {
+    Enigo::new(&Settings::default()).map(|k| (k, "native"))
+}
+
+fn paste_chord(kb: &mut Enigo) -> Result<(), enigo::InputError> {
+    kb.key(PASTE_MODIFIER, Direction::Press)?;
+    let pressed = kb.key(Key::Unicode('v'), Direction::Click);
+    // Release the modifier even if the keystroke failed. A stuck Ctrl would
+    // break the user's keyboard until they pressed and released it themselves.
+    kb.key(PASTE_MODIFIER, Direction::Release)?;
+    pressed
 }
 
 /// Offline: a WAV file fed through the loop in microphone-sized blocks.
@@ -153,7 +296,7 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
     println!("input   {wav}  ({:.1}s)", samples.len() as f64 / SAMPLE_RATE as f64);
 
     let engine = warm_up(model_dir, threads)?;
-    let mut clipboard = open_clipboard();
+    let mut out = Output::open(want_paste());
     let mut intake = Intake::new(SAMPLE_RATE, 1)?;
     let mut segmenter = Segmenter::new();
     let mut n = 0;
@@ -164,13 +307,13 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
     for chunk in samples.chunks(block) {
         for utterance in intake.feed(chunk, &mut segmenter)? {
             n += 1;
-            emit(&engine, clipboard.as_mut(), n, &utterance)?;
+            emit(&engine, &mut out, n, &utterance)?;
         }
     }
     // The file ended without a trailing pause; take whatever is still open.
     if let Some(utterance) = segmenter.close() {
         n += 1;
-        emit(&engine, clipboard.as_mut(), n, &utterance)?;
+        emit(&engine, &mut out, n, &utterance)?;
     }
 
     println!("{n} utterance(s) from one model load.");
@@ -197,7 +340,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
     let stream = build_stream(&device, &supported, tx)?;
 
     let engine = warm_up(model_dir, threads)?;
-    let mut clipboard = open_clipboard();
+    let mut out = Output::open(want_paste());
 
     let quit = Arc::new(AtomicBool::new(false));
     {
@@ -225,7 +368,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
         };
         for utterance in intake.feed(&block, &mut segmenter)? {
             n += 1;
-            emit(&engine, clipboard.as_mut(), n, &utterance)?;
+            emit(&engine, &mut out, n, &utterance)?;
         }
     }
 
