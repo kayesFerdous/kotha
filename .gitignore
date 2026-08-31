@@ -20,3 +20,7 @@ dist/
 .DS_Store
 *.log
 out/
+
+# Spike scratch output
+spike/gate_out.txt
+spike/mel_dump.bin

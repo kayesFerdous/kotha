@@ -669,6 +669,9 @@ dependencies = [
  "anyhow",
  "ct2rs",
  "hound",
+ "mel_spec",
+ "ndarray",
+ "rustfft",
 ]
 
 [[package]]
