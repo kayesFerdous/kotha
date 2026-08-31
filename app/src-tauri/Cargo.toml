@@ -18,3 +18,17 @@ tauri-plugin-global-shortcut = "2"
 kotha-spike = { path = "../../spike" }
 anyhow = "1"
 cpal = "0.18.2"
+
+# Phase 5's model download: two HTTPS GETs, one of them 775 MB with a Range
+# header. `ureq` is blocking and synchronous, which is what the worker thread
+# wants — it owns the engine and there is no async anywhere near it.
+#
+# Not `reqwest`, even though Tauri lists it: that dependency is Android and iOS
+# only, so on desktop it is an entire new tree — hyper, h2, tokio, a TLS stack —
+# for two requests. Not `curl` either, tempting as it is with `setup.sh`'s
+# invocation already proven, because a shipped app cannot require a binary it
+# does not ship on the one path where first-run either works or the user gives
+# up.
+ureq = { version = "3", features = ["json"] }
+sha2 = "0.10"
+serde_json = "1"

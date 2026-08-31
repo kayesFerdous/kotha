@@ -34,18 +34,21 @@
 //! Environment:
 //!
 //! ```text
-//! KOTHA_MODEL    the CTranslate2 model directory. Until Phase 5 downloads it,
-//!                this defaults to ./models/whisper-medium-bn-en-cs-faster.
+//! KOTHA_MODEL    the CTranslate2 model directory. Unset, the app uses
+//!                ./models/whisper-medium-bn-en-cs-faster if that exists and
+//!                otherwise downloads to the app data directory.
 //! KOTHA_THREADS  decode threads (default: physical cores).
 //! KOTHA_PASTE    unset = clipboard only, 1 = synthetic paste, portal = libei.
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
+
+use anyhow::{anyhow, bail, Context};
 
 use kotha_spike::correct::Corrector;
 use kotha_spike::live::{self, Microphone, Output, Segmenter};
@@ -59,11 +62,242 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// PLAN.md's proposal, not yet final.
 const HOTKEY: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::Space);
 
-/// Where the model lives until Phase 5 downloads it for the user.
-fn model_dir() -> PathBuf {
-    std::env::var_os("KOTHA_MODEL")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "models/whisper-medium-bn-en-cs-faster".into())
+/// Where the model lives.
+///
+/// Three answers, in order, because three different people are asking:
+///
+///   1. `KOTHA_MODEL` — someone testing a different checkpoint.
+///   2. `./models/...` in the working directory — a developer running from the
+///      repo, where that directory is symlinks into the paper-project tree.
+///      Only taken if it actually has a `model.bin` in it, so a stale empty
+///      directory does not shadow a real download.
+///   3. The app data directory — everybody else, and where `fetch_model`
+///      downloads to. A shipped app is launched from a menu with the working
+///      directory set to `/` or `$HOME`, so a relative path is not an answer
+///      for anyone but case 2.
+fn model_dir(app: &AppHandle) -> PathBuf {
+    if let Some(p) = std::env::var_os("KOTHA_MODEL") {
+        return PathBuf::from(p);
+    }
+    let dev = PathBuf::from("models").join(MODEL_NAME);
+    if dev.join("model.bin").is_file() {
+        return dev;
+    }
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(MODEL_NAME)
+}
+
+const MODEL_NAME: &str = "whisper-medium-bn-en-cs-faster";
+const HF_REPO: &str = "kayees/whisper-medium-bn-en-cs-faster";
+
+/// Every file `ct2rs::Whisper::new()` wants. Do not prune this list — it loads
+/// the published directory as-is, which is the whole reason this app runs the
+/// exact int8 weights that were benchmarked (CLAUDE.md §3).
+const MODEL_FILES: [&str; 5] = [
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.json",
+    "config.json",
+    "preprocessor_config.json",
+];
+
+/// Download the model if it is not already there. 778 MB, resumable, verified.
+///
+/// This is `setup.sh`'s logic moved into the binary, because a shipped app has
+/// no shell script next to it. It keeps that script's two hard-won details:
+///
+///   * **Resume, and retry around a dropped connection.** HuggingFace resets
+///     long transfers often enough that a single request is not reliable for a
+///     775 MB file — one was lost at 226 MB during Phase 0. Each attempt asks
+///     for a byte range starting from whatever is already on disk, so a failure
+///     costs the remainder and not the whole thing.
+///   * **Verify against HuggingFace's own manifest, not a hard-coded number.**
+///     A truncated or badly-resumed `model.bin` fails much later and very
+///     confusingly, and eyeballing the size does not catch a corrupt resume.
+///     Reading the expected size and hash from the API also means re-uploading
+///     the model does not require editing a constant here.
+///
+/// The manifest is fetched first and drives everything: a local file is
+/// complete when its length matches, partial when it is shorter, and junk when
+/// it is longer. That is a better completeness test than `curl -C -` had, which
+/// could only ask the server and hope.
+///
+/// `progress` is called with (bytes done, bytes total) for the whole set, often
+/// enough to drive a bar and rarely enough not to be the bottleneck.
+fn fetch_model(dir: &Path, mut progress: impl FnMut(u64, u64)) -> anyhow::Result<()> {
+    // Three separate deadlines rather than one, which is the reason ureq is a
+    // better fit here than a total-timeout client: connecting and getting
+    // headers back should be quick, and the 775 MB body must not be on a clock
+    // at all. A slow link is not an error.
+    let http: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(20)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_global(None)
+        .build()
+        .into();
+
+    let manifest: serde_json::Value = http
+        .get(format!("https://huggingface.co/api/models/{HF_REPO}/tree/main"))
+        .call()
+        .context("could not reach HuggingFace for the model manifest")?
+        .body_mut()
+        .read_json()
+        .context("could not read the model manifest from HuggingFace")?;
+
+    // name -> (size, sha256). Small files are not LFS objects and have no hash,
+    // so for those the size is the whole check — which is fine, because what
+    // they are exposed to is truncation, not a corrupt resume.
+    let mut want: Vec<(&str, u64, Option<String>)> = Vec::new();
+    for name in MODEL_FILES {
+        let entry = manifest
+            .as_array()
+            .and_then(|es| es.iter().find(|e| e["path"] == name))
+            .ok_or_else(|| anyhow!("{name} is not in the {HF_REPO} manifest"))?;
+        let size = entry["size"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("{name} has no size in the manifest"))?;
+        want.push((name, size, entry["lfs"]["oid"].as_str().map(str::to_owned)));
+    }
+
+    let total: u64 = want.iter().map(|(_, s, _)| s).sum();
+    if want.iter().all(|(n, s, _)| on_disk(&dir.join(n)) == *s) {
+        progress(total, total);
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(dir)?;
+    let already: u64 = want.iter().map(|(n, s, _)| on_disk(&dir.join(n)).min(*s)).sum();
+    progress(already, total);
+    println!(
+        "model   {} of {} MB to fetch into {}",
+        (total - already) >> 20,
+        total >> 20,
+        dir.display()
+    );
+
+    // Bytes in files already finished. Progress is `finished + <this file so
+    // far>`, computed rather than accumulated, so a restart that throws away a
+    // partial file cannot leave a running total quietly wrong.
+    let mut finished: u64 = 0;
+
+    for (name, size, sha) in &want {
+        let path = dir.join(name);
+
+        for attempt in 1..=6 {
+            let have = on_disk(&path);
+            if have == *size {
+                break;
+            }
+            if have > *size {
+                // Longer than the manifest says, so this is not a partial
+                // download — it is a different or damaged file. Start over
+                // rather than resuming onto garbage.
+                std::fs::remove_file(&path)?;
+            }
+            match stream_to(&http, name, &path, on_disk(&path), &mut |sofar| {
+                progress(finished + sofar, total)
+            }) {
+                Ok(()) => break,
+                Err(e) if attempt < 6 => {
+                    // Resume rather than restart: HuggingFace resets long
+                    // transfers often enough that a single request is not
+                    // reliable for a 775 MB file — Phase 0 lost one at 226 MB.
+                    // A failure then costs the remainder, not the whole thing.
+                    eprintln!("model   attempt {attempt} failed ({e:#}) — resuming");
+                    thread::sleep(Duration::from_secs(3));
+                }
+                Err(e) => return Err(e.context(format!("gave up on {name} after 6 attempts"))),
+            }
+        }
+
+        let got = on_disk(&path);
+        if got != *size {
+            bail!("{name} is {got} bytes, expected {size} — the download is incomplete");
+        }
+        if let Some(sha) = sha {
+            println!("model   hashing {name}, this takes a few seconds");
+            let actual = sha256(&path)?;
+            if &actual != sha {
+                // A resume landed on the wrong offset. Nothing here can repair
+                // that, and leaving it would make the next run skip it on a
+                // matching size — so it goes.
+                std::fs::remove_file(&path)?;
+                bail!(
+                    "{name} sha256 does not match HuggingFace, so it has been deleted.\n    \
+                     expected {sha}\n    actual   {actual}\n    \
+                     Start a dictation again to re-fetch it."
+                );
+            }
+        }
+        finished += size;
+    }
+
+    println!("model   ready in {}", dir.display());
+    Ok(())
+}
+
+/// Bytes already on disk, or 0 — a missing file and an empty one are the same
+/// thing to a resume.
+fn on_disk(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// One attempt at one file, appending from byte `from`.
+///
+/// `on_bytes` is called with how many bytes of *this file* are on disk, not a
+/// delta — so a restart reports a smaller number and the caller's total goes
+/// backwards honestly, instead of finishing at 110%.
+fn stream_to(
+    http: &ureq::Agent,
+    name: &str,
+    path: &Path,
+    from: u64,
+    on_bytes: &mut impl FnMut(u64),
+) -> anyhow::Result<()> {
+    let mut req = http.get(format!("https://huggingface.co/{HF_REPO}/resolve/main/{name}"));
+    if from > 0 {
+        req = req.header("Range", format!("bytes={from}-"));
+    }
+    let mut res = req.call()?;
+
+    // A server that ignores the range header answers 200 with the whole file.
+    // Appending that onto what we already have would produce a file of the
+    // right length made of the wrong bytes — which only the hash would catch,
+    // and only after 775 MB. So truncate and take it from the top instead.
+    let resuming = from > 0 && res.status().as_u16() == 206;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resuming)
+        .truncate(!resuming)
+        .open(path)?;
+
+    let mut sofar = if resuming { from } else { 0 };
+    on_bytes(sofar);
+
+    let mut body = res.body_mut().as_reader();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = std::io::Read::read(&mut body, &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut file, &buf[..n])?;
+        sofar += n as u64;
+        on_bytes(sofar);
+    }
+    std::io::Write::flush(&mut file)?;
+    Ok(())
+}
+
+fn sha256(path: &Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// The pill's window, in logical pixels.
@@ -333,8 +567,22 @@ fn dictate(
     // Loaded on first use rather than at startup: a tray app that has not
     // dictated yet has no business holding 1.4 GB resident.
     if engine.is_none() {
+        let dir = model_dir(app);
+        // 778 MB, once, on the first dictation ever — the same trigger as the
+        // load itself, so a tray app that has not dictated yet neither holds
+        // 1.4 GB nor spends the user's bandwidth. Progress goes to stdout for
+        // now; the pill learns about it next.
+        // `done` can go backwards when a server refuses to resume, so the
+        // gate is saturating rather than a plain subtraction.
+        let mut last = 0u64;
+        fetch_model(&dir, |done, total| {
+            if done == total || done.saturating_sub(last) >= 16 << 20 {
+                last = done;
+                println!("model   {} / {} MB", done >> 20, total >> 20);
+            }
+        })?;
+
         let t = std::time::Instant::now();
-        let dir = model_dir();
         *engine = Some(Engine::load(&dir, threads).map_err(|e| {
             e.context(format!("could not load the model from {}", dir.display()))
         })?);
@@ -551,4 +799,54 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Resuming a half-finished file must produce the same bytes as fetching it
+    /// whole.
+    ///
+    /// This is the part of `fetch_model` worth a test: the size and hash checks
+    /// fail loudly on their own, but a resume that lands on the wrong offset
+    /// produces a file of exactly the right length made of the wrong bytes, and
+    /// only the hash would ever notice — after 775 MB. So the append-vs-truncate
+    /// decision is checked here, on a 1.4 KB file, against the real server.
+    ///
+    /// It talks to HuggingFace, like `clipboard_is_borrowed_and_returned` talks
+    /// to the real clipboard: the thing being tested is agreement with a system
+    /// we do not control, and a fake would only prove we agree with ourselves.
+    #[test]
+    fn a_resumed_download_matches_a_whole_one() {
+        let http: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(20)))
+            .build()
+            .into();
+        let dir = std::env::temp_dir().join("kotha-resume-test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let whole = dir.join("whole");
+        stream_to(&http, "config.json", &whole, 0, &mut |_| {}).unwrap();
+        let expected = std::fs::read(&whole).unwrap();
+        assert!(expected.len() > 200, "config.json came back suspiciously short");
+
+        // Half of it on disk, as if a connection had dropped there.
+        let half = expected.len() / 2;
+        let partial = dir.join("partial");
+        std::fs::write(&partial, &expected[..half]).unwrap();
+
+        let mut reported = Vec::new();
+        stream_to(&http, "config.json", &partial, half as u64, &mut |n| reported.push(n)).unwrap();
+
+        assert_eq!(std::fs::read(&partial).unwrap(), expected, "resume produced different bytes");
+        assert_eq!(reported.first(), Some(&(half as u64)), "resume did not start from the offset");
+        assert_eq!(
+            reported.last(),
+            Some(&(expected.len() as u64)),
+            "progress did not end at the full length"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
