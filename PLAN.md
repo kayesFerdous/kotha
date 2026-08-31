@@ -6,10 +6,12 @@ laid out visually is at
 update it as phases complete. Last touched 2026-08-30.
 
 **Status: Phase 0 passes on the Arch/Ryzen machine, 2026-08-30.** `ct2rs` runs
-this model at faster-whisper's speed and better accuracy, with feature
-extraction verified bit-exact against Whisper's reference. Four defects were
-found in `ct2rs`; all four are fixed here. The engine is settled — the only
-thing left for Phase 0 is repeating the measurements on the M2.
+this model at faster-whisper's speed and matching accuracy, agreeing with it on
+99.27% of characters once decode settings are matched, with feature extraction
+verified bit-exact against Whisper's reference. Four defects were
+found; three were fixed in the spike and the fourth on HuggingFace. The engine
+is settled — the only thing left for Phase 0 is repeating the measurements on
+the M2.
 
 ---
 
@@ -78,21 +80,27 @@ decoded by faster-whisper **on this same machine** with the identical params
 (`language="bn", beam_size=1, suppress_tokens=[]`). Same files, same hardware,
 so the comparison is clean.
 
-**1. `processor_class` is missing from the published model.** `ct2rs`
-deserialises `preprocessor_config.json` into a struct that requires a
-`processor_class` field. The published file has no such field, so
-`Whisper::new()` fails with `missing field processor_class`. faster-whisper
-never needed it.
+**1. `processor_class` was missing from the published model.**  ⟵ *fixed at source*
 
-Worked around locally by writing a patched copy into
-`models/whisper-medium-bn-en-cs-faster/` (the large files are symlinked to
-`~/Documents/ASR/fine_tuned/whisper-medium-bn-v1.3-ct2-int8/`, which is *not*
-edited — that tree belongs to the paper project).
+`ct2rs` deserialises `preprocessor_config.json` into a struct with a required
+`processor_class` field. The published file had no such field, so
+`Whisper::new()` failed outright with `missing field processor_class`.
+faster-whisper never reads it, so nothing had noticed.
 
-**This will hit every user**, because the file on HuggingFace is the one that
-lacks the field. Two ways out, and it is Kayes's call which:
-  - add `"processor_class": "WhisperProcessor"` to the HF repo, or
-  - have the app patch the file after download.
+The cause was asymmetry in the CTranslate2 conversion: it carries
+`preprocessor_config.json` across but drops the sibling files that hold the
+declaration. The fp16 repo declares `processor_class` in both
+`processor_config.json` and `tokenizer_config.json`; the converted CT2 repo had
+it nowhere.
+
+**Fixed on HuggingFace, 2026-08-30.** `kayees/whisper-medium-bn-en-cs-faster`
+now ships `"processor_class": "WhisperProcessor"`. Verified live, and
+`model.bin` is untouched — still 774,731,149 bytes, sha256 `9c0e38dc…ea74`. A
+fresh `./setup.sh` therefore produces a directory that loads as-is, with no
+patching needed anywhere in the app.
+
+The fp16 repo needs no change; transformers already finds the field in its
+sibling files.
 
 **2. `ct2rs`'s feature extraction is wrong in three ways.**  ⟵ *fixed*
 
@@ -335,8 +343,13 @@ a faster-whisper baseline in `results/cpu_bench.json`. Nothing needed
 downloading and the "copy 20 WAVs over" step never applied.
 
 `models/whisper-medium-bn-en-cs-faster/` here is a directory of symlinks into
-that paper-project tree, plus one real local file — the patched
-`preprocessor_config.json`. Nothing under `~/Documents/ASR` is modified.
+that paper-project tree, plus one real local file. That file is
+`preprocessor_config.json`, byte-identical to what HuggingFace now serves — the
+copy in the paper tree predates the fix and still lacks `processor_class`, so it
+cannot simply be symlinked. Nothing under `~/Documents/ASR` is modified.
+
+On a machine that fetches the model with `./setup.sh` none of this applies: the
+download is correct as published and needs no local file at all.
 
 **Still to do on the M2:** install the toolchain by hand (below), fetch the
 model with `./setup.sh`, and re-measure. The numbers do not transfer — the
