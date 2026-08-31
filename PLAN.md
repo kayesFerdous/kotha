@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first for the durable rules. The same plan with the reasoning
 laid out visually is at
 <https://claude.ai/code/artifact/3107084e-3472-4798-918f-e47e3410785b>. This file is the working state:
-update it as phases complete. Last touched 2026-08-30.
+update it as phases complete. Last touched 2026-08-31.
 
 **Status: Phase 0 passes on the Arch/Ryzen machine, 2026-08-30.** `ct2rs` runs
 this model at faster-whisper's speed and matching accuracy, agreeing with it on
@@ -238,19 +238,147 @@ belong in the paper.
 
 Independent of the Rust work. Prototype in Python, port to Rust after.
 
-- [ ] Re-decode the 393 test utterances to get hypothesis text
-- [ ] Align English tokens against references; **split the 13.6-point
+- [x] Re-decode the 393 test utterances to get hypothesis text
+- [x] Align English tokens against references; **split the 13.6-point
       strict/tolerant gap into *misspelled in Latin* vs *written in Bengali***
-- [ ] Build the dictionary: `en_50k.txt` (OpenSubtitles — casual spoken English,
-      the right register) + the English side of the corpus vocabulary
-- [ ] SymSpell index (edit distance ≤ 2) + Double Metaphone fallback
-- [ ] Tune the abstain threshold **on training-side data only**
+- [x] Build the dictionary — **`wordfreq`, already installed, no download.** It
+      is the same OpenSubtitles-blend register `en_50k.txt` comes from, plus
+      the English side of the **training** corpus (7,320 types) for the domain
+      words a general list lacks. 50,264 entries
+- [x] SymSpell index, edit distance ≤ 2 (1.2 M delete keys)
+- [ ] Double Metaphone fallback — **still open.** It is what would reach the
+      ED 3+ tail, 15% of misspellings (`carector` → `character`)
+- [x] Tune the abstain threshold **on training-side data only**
 - [ ] Port to Rust (~200 lines)
 
 **Accept when:** strict English-F1 improves measurably on held-out data, and
 zero non-Latin tokens are modified across the whole test set.
 
 **Rule:** do not tune on the 393 test utterances. Hold them out, evaluate once.
+
+#### Result — 2026-08-31. **Phase 1 passes.**
+
+`spike/correct.py`. Strict English-F1 **71.81 → 77.02, +5.21 points** on the
+held-out 393, and **zero non-Latin tokens modified** — asserted in the
+evaluation, not trusted. Both acceptance conditions met.
+
+| | before | after |
+|---|---|---|
+| written in Latin, spelled right | 2952 | **3169** |
+| written in Latin, misspelled | 545 | **309** |
+| written in Latin, unrecognisably wrong | 194 | 216 |
+| strict / tolerant gap | 13.54 pts | **8.05 pts** |
+| strict P / R / F1 | 74.54 / 69.27 / 71.81 | **79.95 / 74.30 / 77.02** |
+
+236 misspellings corrected: 217 became exact, ~19 got worse. **About 91%
+precision on the tokens it chose to touch.**
+
+**The gate is a frequency margin under a floor, not "is it a word."** The
+obvious design — correct only tokens missing from the dictionary — fails twice
+here: 26.4% of the model's misspellings *are* real English words (`mill` for
+`meal`, `throw` for `through`), and the dictionary itself contains common
+misspellings (`grammer` is in wordfreq's top 50k). So instead:
+
+- `KNOWN_FLOOR = 2.5` — a token above this zipf is never touched. Without it
+  the corrector eats ordinary English (`then` → `the`, `hand` → `and`) at ~1%
+  of every English token, which is far too much to do to correct text.
+- `MARGIN = 1.0` — below the floor, take the best candidate within ED 2 only
+  if it is this much more common. Inert at floor 2.5; kept as a guard for when
+  the dictionary changes.
+
+**Calibrated on the training split, never on the 393.** Training references
+turned out not to be perfectly clean — the corrector's top "errors" against
+them were `algorithom` → `algorithm`, `truncess` → `princess`, which are fixes
+— so a raw change count is useless as a safety number. The metric that works
+is *did it rewrite a token that was already a real English word*. Floor 2.5 is
+the knee: at 2.5 and below that number is **0** while all 585 tail fixes
+survive; at 3.0 damage appears (`unhappiness` → `happiness`, `slab` → `lab`).
+
+**What the floor gives up, deliberately:** `grammer` sits at zipf 2.9, above
+the floor, so it is not fixed. Unigram frequency cannot separate `grammer`
+(a misspelling at 2.9) from `neutrally` (a real word at ~3.0). Nothing at this
+floor can. That separation needs the surrounding words — the bigram context in
+Phase 7 — and this is the measurement that says when to build it. The
+concession is asserted in `correct.py --selftest`, so raising the floor
+without re-calibrating fails loudly.
+
+**Caveat on the safety number:** "real word" is wordfreq's top 50k, which
+misses inflected forms — `sunbeams` and `neutrally` counted as benign when
+they are words. It under-counts damage. That is the safe direction here, since
+2.5 is already the most protective setting swept; it would matter only if a
+looser one were chosen.
+
+**Headroom left:** 309 misspellings remain. 90% are within ED 3, so Double
+Metaphone is the next lever, then bigram context for the real-word 26%.
+
+#### The gap, split — 2026-08-31
+
+`spike/gap.py` walks the jiwer word alignment over all 393 utterances and
+classifies every **Latin reference token** by what the model actually put in
+its place. Hypotheses are the Rust spike's (int8, greedy, `suppress_tokens=[]`)
+— the engine the corrector will run behind. Scoring imports the paper's
+`bnasr_eval.py` read-only, so "Latin token" and "tolerant match" mean exactly
+what they mean in the paper. References are `test_manifest.csv`, which
+HANDOVER §3 names as the test set; `listen_v13/test_repaired.csv` disagrees on
+122 of 393 rows and is the earlier, worse version (`englishe` for `english`).
+
+| What happened to a Latin reference token | count | share |
+|---|---|---|
+| written in Latin, spelled right | 2952 | 68.7% |
+| **written in Latin, misspelled** | **545** | **12.7%** |
+| written in Latin, unrecognisably wrong | 194 | 4.5% |
+| **written in Bangla script, recognisable** | **37** | **0.9%** |
+| written in Bangla, unrecognisable | 60 | 1.4% |
+| dropped entirely | 510 | 11.9% |
+| replaced by a digit / other | 1 | 0.0% |
+| | 4299 | |
+
+**The gap is 13.54 points, and 93.6% of it is spelling.** Only 37 tokens —
+6.4% of the gap, 0.9% of all English tokens — are the Bengali-script case.
+CLAUDE.md §6's caveat ("part of that gap is not spelling") is answered: almost
+none of it. The corrector owns essentially the whole 13.6 points.
+
+That the split reproduces the paper's gap at 13.54 on a different engine and
+precision, with strict F1 71.81 against the paper's 72.2, is the check that
+the measurement is sound.
+
+| Strict English-token score | P | R | F1 |
+|---|---|---|---|
+| now | 74.54 | 69.27 | **71.81** |
+| every misspelling fixed | 88.19 | 81.95 | 84.95 |
+| plus the unrecognisable Latin | 93.04 | 86.46 | 89.63 |
+
+Both ceilings assume perfect correction and zero damage to tokens already
+right. They are upper bounds, not forecasts. A misspelling costs twice in
+strict scoring — a missed reference token *and* a spurious hypothesis token —
+which is why the F1 ceiling (+13.1) exceeds the recall gap.
+
+**Edit distance from the model's spelling to the reference:** 56.9% are
+distance 1, 84.8% are ≤ 2. So **SymSpell at ED≤2 can reach 462 of 545**; the
+remaining 83 need distance 3+ and are what the Double Metaphone fallback is
+for. This settles the ED≤2 choice as measured rather than conventional.
+
+**Two things the corrector cannot fix, both larger than they look:**
+
+- **510 dropped tokens (11.9%)** — the model emits nothing at all. Bigger than
+  the entire spelling problem's *recall* share, and nothing downstream can
+  recover a word that was never written. This is the ceiling on English recall
+  no matter how good the corrector gets.
+- **Real-word errors.** `mill`→`meal`, `word`→`words`, `collar`→`color`,
+  `throw`→`through`, `diner`→`dinner`, `blog`→`vlog`. A dictionary lookup only
+  fires on tokens that are *not* words, so these are invisible to it.
+  **Quantify this before building** — it decides whether the corrector needs
+  the bigram context now (Phase 7) rather than later. It is the one number
+  that could change the design.
+
+`gap.py` is resumable: a power cut during the first decode cost 30 utterances
+and left a NUL tail where the page cache never flushed, so it strips NULs,
+decodes only what is missing, and appends. It also warns and scores the subset
+rather than blocking if a decode is still incomplete.
+
+Not a tuning run. The per-word lists it prints are for understanding. The
+dictionary must come from `en_50k` plus the **training-side** vocabulary —
+reading a misspelling off this output would be fitting the held-out set.
 
 ---
 
@@ -412,6 +540,12 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 | RTF, int8, 4 threads — M2 | — | |
 | RTF, int8, 8 threads — M2 | — | |
 | Peak RSS | — | |
+| Strict/tolerant gap that is spelling | **93.6%** (545 of 582 tokens) | 2026-08-31 |
+| Misspellings reachable at SymSpell ED≤2 | 84.8% (462 of 545) | 2026-08-31 |
+| Misspellings that are real English words | 26.4% — invisible to a dictionary | 2026-08-31 |
+| English tokens dropped entirely | 11.9% (510 of 4299) | 2026-08-31 |
 | Corrector latency per sentence | — | |
-| Strict English-F1, before corrector | — | |
-| Strict English-F1, after corrector | — | |
+| Strict English-F1, before corrector | **71.81** (spike, int8, 393 utts) | 2026-08-31 |
+| Strict English-F1, after corrector | **77.02** (+5.21, held out) | 2026-08-31 |
+| Non-Latin tokens modified by corrector | **0** of 393 utterances | 2026-08-31 |
+| Misspellings corrected | 236 of 545, ~91% precision | 2026-08-31 |
