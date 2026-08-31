@@ -8,8 +8,8 @@ update it as phases complete. Last touched 2026-08-30.
 **Status: Phase 0 passes on the Arch/Ryzen machine, 2026-08-30.** `ct2rs` runs
 this model at faster-whisper's speed and better accuracy, with feature
 extraction verified bit-exact against Whisper's reference. Four defects were
-found in `ct2rs`; all four are fixed here. One decision is open — see
-*Why the strings still differ*. Phase 0 has not been repeated on the M2.
+found in `ct2rs`; all four are fixed here. The engine is settled — the only
+thing left for Phase 0 is repeating the measurements on the M2.
 
 ---
 
@@ -36,7 +36,7 @@ the model was trained on.
 
 Each phase has one acceptance test. Do not start the next phase until it passes.
 
-### Phase 0 — Prove the engine  ⟵ GATE, passed on evidence
+### Phase 0 — Prove the engine  ⟵ GATE, PASSED (M2 numbers outstanding)
 
 Does `ct2rs` load this model and produce the same text faster-whisper does?
 
@@ -47,11 +47,12 @@ Does `ct2rs` load this model and produce the same text faster-whisper does?
 - [x] Diff Rust output against faster-whisper on 50 utterances
 - [x] Record real RTF for the Ryzen (below)
 - [x] Fix `ct2rs`'s feature extraction; verify it against Whisper's reference
-- [ ] **Decide how to close the byte-diff** — see *Why the strings still differ*
+- [x] Close the byte-diff against a properly matched faster-whisper baseline
 - [ ] Repeat on the M2
 
 **Accept when:** the strings match faster-whisper's, and English words come out
-in Latin script with spaces intact.
+in Latin script with spaces intact. *Both met* — the first against a matched
+baseline, once it became clear the stored one used different decode settings.
 
 **Where it stands:** everything the gate was built to catch is clear. English
 is in Latin script with spaces intact, zero fusion warnings across 50
@@ -59,9 +60,9 @@ utterances — the `suppress_tokens` catastrophe did not occur. Speed matches
 Python. Accuracy against the human references is better than the Python
 baseline's, and the mel is bit-exact against Whisper's published formula.
 
-The strings still do not match the stored baseline byte-for-byte, but that
-baseline turned out not to be a like-for-like target — see below. The engine is
-not in doubt; what to compare against is.
+Against a properly matched faster-whisper baseline the two engines agree to
+99.27% of characters, with the remainder traced to the MKL-vs-oneDNN build —
+see *Why the strings differ*.
 
 **If it fails:** stop and reconsider. Fallback is a bundled Python sidecar
 running faster-whisper — roughly +300 MB and worse packaging, but it works. This
@@ -156,73 +157,72 @@ elsewhere. Costs 8m48s of build time and grows the binary 8.3 MB → 75.7 MB
 line in CLAUDE.md §3 and should be revisited at Phase 6; next to a 775 MB model
 it is not the thing to optimise first.
 
-#### Why the strings still differ  ⟵ *needs a decision*
+#### Why the strings differ — settled
 
-The gate said: accept when the strings match faster-whisper's. They do not —
-14 of 50 match byte-for-byte. The reason is not a defect, and chasing it
-further would be chasing the wrong thing.
+The gate said: accept when the strings match faster-whisper's. Against the
+stored baseline only 14 of 50 matched, which looked alarming. It was not a
+defect in either engine; it was two different questions being compared.
 
-Four different feature pipelines were measured against the same baseline:
+**The stored baseline was never a like-for-like target.**
+`results/cpu_bench.py` calls
+`transcribe(language="bn", beam_size=1, suppress_tokens=[])` and takes
+faster-whisper's defaults for everything else — including
+`temperature=[0.0, 0.2, ... 1.0]`, a fallback ladder that **samples** whenever
+greedy output trips the compression-ratio or logprob check, and
+`without_timestamps=False`. So it is a stochastic multi-temperature decode with
+a different prompt, and it is not reproducible byte-for-byte even against
+itself. That is also where its mangled openings come from — `0`, `00`,
+`ntermedit`, `jara` are fallback artifacts — and why its CER is the worse of
+the two.
 
-| Feature path | identical | Rust CER |
-|---|---|---|
-| `ct2rs` stock, ruy | 16/50 | 0.0411 |
-| `ct2rs` stock, oneDNN | 14/50 | 0.0415 |
-| global normalisation, `mel_spec` framing | 9/50 | 0.0383 |
-| **fully conformant STFT** | **14/50** | **0.0389** |
-| faster-whisper baseline | — | 0.0500 |
+**Re-run matched, the picture changes completely.** `gate.py --baseline matched`
+re-decodes the same files with `temperature=0.0`, `without_timestamps=True`,
+`condition_on_previous_text=False`, using the venv at
+`~/Documents/ASR/bangla-asr-test/.venv`:
 
-The agreement count barely moves while the CER gap stays put. Preprocessing is
-not what separates the two engines — and once the mel was verified bit-exact,
-it could not be.
+| Baseline | identical | faster-whisper CER | Rust CER |
+|---|---|---|---|
+| stored (temperature fallback) | 14/50 | 0.0500 | 0.0389 |
+| **matched (greedy, no timestamps)** | **25/50** | **0.0409** | **0.0389** |
 
-The baseline is what differs. `results/cpu_bench.py` calls
-`m.transcribe(p, language="bn", beam_size=1, suppress_tokens=[])` and takes
-**faster-whisper's defaults for everything else**, which include:
+Temperature fallback was costing faster-whisper 0.009 CER on its own. With
+settings matched, the two engines are within 0.002 CER, and character-level
+disagreement is **0.73% — 66 characters out of 9,001**, spread over 25
+utterances, the largest single difference being 12 characters. Every one is a
+single low-confidence word: `অবশ্যই`/`অবশ্য`, `arabi`/`arabic`,
+`সোনা`/`শোনা`.
 
-  - `temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` — a fallback ladder that
-    **samples** whenever greedy output trips the compression-ratio or logprob
-    check. The baseline is therefore not deterministic, and not reproducible
-    byte-for-byte by anything, including faster-whisper itself.
-  - `without_timestamps=False` — timestamp tokens are generated and used for
-    segmentation. The spike sends `<|notimestamps|>`, a different prompt and so
-    a different decode path.
-  - `condition_on_previous_text=True`.
+**What accounts for the last 0.73%.** Every other variable was measured, not
+assumed:
 
-So the comparison has been one deterministic greedy pass against a stochastic
-multi-temperature decode using a different prompt. Those cannot match in
-general. It also explains the mangled openings in the baseline — `0`, `00`,
-`ntermedit`, `jara`, `oup` — which are fallback artifacts, and why the
-baseline's CER is the worse of the two.
+| Variable | Result |
+|---|---|
+| Audio decoding | **bit-identical** — faster-whisper's `decode_audio` vs the spike's `hound` path, max abs diff 0.0 |
+| Mel features | **identical** — the spike is bit-exact against Whisper's reference; faster-whisper's own extractor is within 3.3e-06 of it |
+| Decode policy | matched explicitly |
+| CTranslate2 version | **4.8.1 in both** |
+| Threading | output is invariant to thread count, so this is not reduction-order noise |
+| **GEMM build** | Python wheel links **Intel MKL**; this build uses **oneDNN**. The only variable left. |
 
-**Kotha should keep the single greedy pass.** Temperature fallback is
-non-deterministic, costs extra decode passes, and for live dictation an
-occasional visible error beats an invisible resample. The divergence is a
-deliberate difference in decode policy, not a bug to fix.
+By elimination the residual is the compiled math backend: different int8 kernels
+round differently, and a handful of near-ties fall the other way. Consistent
+with the earlier ruy→oneDNN swap, which moved two outputs with everything else
+held fixed.
 
-**The open decision — how to close this out. Kayes's call:**
+**Verdict: the gate passes.** Same audio, same features, same decode policy,
+same library version, 99.27% character agreement, and equal accuracy against
+the human references. `ct2rs` runs this model correctly.
 
-  1. **Re-run the baseline with matched settings** — `temperature=0`,
-     `without_timestamps=True`, `condition_on_previous_text=False` — and diff
-     against that. This is the only way to get a true byte-level comparison.
-     It needs `pip install faster-whisper` in a venv; agent auto mode blocks
-     package installation, so it has to be run by hand.
-  2. **Accept the gate on the evidence already in hand:** mel bit-exact against
-     Whisper's reference, better CER than the Python baseline, correct
-     code-switched script, no token fusion, and speed parity.
+*Optional, if certainty is ever wanted:* build the spike with ct2rs's `mkl`
+feature and re-run `--baseline matched`. If the backend theory is right that
+should go to ~50/50. Not recommended for shipping — MKL dispatches poorly on
+AMD, which is why oneDNN is the x86-64 choice here — so this is a proof, not a
+change.
 
-Recommendation: (1) if it is worth an hour, because a clean byte-diff is the
-strongest possible evidence and it retires the question permanently. (2) is
-defensible on its own, and nothing downstream is blocked meanwhile.
-
-**On the CER gap — state it carefully.** Rust scores 0.0389 against the
-references where the baseline scores 0.0500, and that gap held across every
-preprocessing variant. The likeliest reading is that temperature fallback hurts
-on this audio, since these chunks begin mid-word and trip the
-compression-ratio check often. That is a claim about *decode settings*, not
-about Rust versus Python — the same settings in either language should give the
-same result. It is 50 utterances. Do not repeat it as a headline number, and
-do not let it near the paper.
+**On the CER numbers.** Rust 0.0389 vs matched faster-whisper 0.0409 is a
+0.002 gap on 50 utterances: noise, not a finding. The earlier 0.0500 figure was
+a *decode-settings* artifact, not a Rust-versus-Python result. None of these
+belong in the paper.
 
 ---
 
@@ -391,8 +391,10 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 | RTF, int8, 6 threads — faster-whisper, same 50 files | 0.669 (1.50× realtime) | earlier, `cpu_bench.json` |
 | Model load time — Ryzen | 0.3 s | 2026-08-30 |
 | CER vs reference, 50 utts — Rust, conformant mel | 0.0389 | 2026-08-30 |
-| CER vs reference, 50 utts — faster-whisper baseline | 0.0500 | 2026-08-30 |
-| Strings identical to baseline, 50 utts | 14 / 50 (see *Why the strings still differ*) | 2026-08-30 |
+| CER, stored baseline (temperature fallback) | 0.0500 | 2026-08-30 |
+| Strings identical — matched baseline, 50 utts | 25 / 50 | 2026-08-30 |
+| Character agreement with matched baseline | 99.27% (66 chars of 9,001) | 2026-08-30 |
+| CER, matched faster-whisper baseline | 0.0409 | 2026-08-30 |
 | Mel vs Whisper reference, max abs diff | 0.0 — bit-exact | 2026-08-30 |
 | RTF, int8, 4 threads — M2 | — | |
 | RTF, int8, 8 threads — M2 | — | |

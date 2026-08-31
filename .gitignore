@@ -24,3 +24,6 @@ out/
 # Spike scratch output
 spike/gate_out.txt
 spike/mel_dump.bin
+spike/matched_baseline.json
+__pycache__/
+*.pyc
