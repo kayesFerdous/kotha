@@ -12,6 +12,15 @@ publish = false
 hound  = "3.5"    # WAV reading. Small and does one thing.
 anyhow = "1"
 
+# Both are already in the tree as ct2rs's own dependencies, at these versions.
+# We need them directly because we compute the mel spectrogram ourselves rather
+# than letting ct2rs do it — see the note in main.rs.
+# mel_spec is used ONLY for its mel filterbank matrix. Its STFT cannot
+# reproduce Whisper's framing — see the note above `log_mel` in main.rs.
+mel_spec = "0.3"
+ndarray  = "0.16"
+rustfft  = "6.4"
+
 # The int8 GEMM backend is target-specific, and getting it wrong costs ~2x.
 #
 # ct2rs's default feature set is `ruy` — Google's ARM-tuned kernel. That is the

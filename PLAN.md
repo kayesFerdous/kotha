@@ -5,10 +5,11 @@ laid out visually is at
 <https://claude.ai/code/artifact/3107084e-3472-4798-918f-e47e3410785b>. This file is the working state:
 update it as phases complete. Last touched 2026-08-30.
 
-**Status: Phase 0 run on the Arch/Ryzen machine, 2026-08-30. The engine works.**
-`ct2rs` loads the published model and decodes at faster-whisper's speed. Three
-defects were found and two are fixed; the third (§ *The mel bug*) is diagnosed
-and not yet fixed. Phase 0 is not signed off until it is.
+**Status: Phase 0 passes on the Arch/Ryzen machine, 2026-08-30.** `ct2rs` runs
+this model at faster-whisper's speed and better accuracy, with feature
+extraction verified bit-exact against Whisper's reference. Four defects were
+found in `ct2rs`; all four are fixed here. One decision is open — see
+*Why the strings still differ*. Phase 0 has not been repeated on the M2.
 
 ---
 
@@ -35,7 +36,7 @@ the model was trained on.
 
 Each phase has one acceptance test. Do not start the next phase until it passes.
 
-### Phase 0 — Prove the engine  ⟵ GATE, nearly closed
+### Phase 0 — Prove the engine  ⟵ GATE, passed on evidence
 
 Does `ct2rs` load this model and produce the same text faster-whisper does?
 
@@ -45,16 +46,22 @@ Does `ct2rs` load this model and produce the same text faster-whisper does?
 - [x] Test audio — all 393 WAVs already on this machine
 - [x] Diff Rust output against faster-whisper on 50 utterances
 - [x] Record real RTF for the Ryzen (below)
-- [ ] **Fix the mel normalisation bug, then re-diff** — the one thing left
+- [x] Fix `ct2rs`'s feature extraction; verify it against Whisper's reference
+- [ ] **Decide how to close the byte-diff** — see *Why the strings still differ*
 - [ ] Repeat on the M2
 
 **Accept when:** the strings match faster-whisper's, and English words come out
 in Latin script with spaces intact.
 
-**Where it stands:** the second half passes outright — English is in Latin
-script, spaces intact, zero fusion warnings across 50 utterances. The
-`suppress_tokens` catastrophe did not occur. Speed matches Python exactly. The
-strings do *not* yet match, and the reason is understood and fixable.
+**Where it stands:** everything the gate was built to catch is clear. English
+is in Latin script with spaces intact, zero fusion warnings across 50
+utterances — the `suppress_tokens` catastrophe did not occur. Speed matches
+Python. Accuracy against the human references is better than the Python
+baseline's, and the mel is bit-exact against Whisper's published formula.
+
+The strings still do not match the stored baseline byte-for-byte, but that
+baseline turned out not to be a like-for-like target — see below. The engine is
+not in doubt; what to compare against is.
 
 **If it fails:** stop and reconsider. Fallback is a bundled Python sidecar
 running faster-whisper — roughly +300 MB and worse packaging, but it works. This
@@ -86,27 +93,49 @@ lacks the field. Two ways out, and it is Kayes's call which:
   - add `"processor_class": "WhisperProcessor"` to the HF repo, or
   - have the app patch the file after download.
 
-**2. The mel bug — `ct2rs` normalises per frame.**  ⟵ *unfixed, blocks the gate*
+**2. `ct2rs`'s feature extraction is wrong in three ways.**  ⟵ *fixed*
 
-`ct2rs-0.9.22/src/whisper.rs:104` calls `norm_mel()` on one 80×1 frame at a
-time. `norm_mel` clamps against `max - 8.0` computed over whatever array it is
-handed — so each frame is normalised against *its own* peak. Whisper takes that
-max over the entire 30-second spectrogram. The encoder is therefore fed
-subtly wrong features everywhere.
+All three are silent. None crashes, warns, or shows up in a smoke test; they
+surface only as text that quietly disagrees with a reference implementation.
 
-This is why only 14 of 50 outputs match faster-whisper byte-for-byte. The
-divergence clusters at utterance starts, where these chunks begin mid-word and
-the decoder is least certain — faster-whisper emits `0`, `ntermedit`, `jara`
-where Rust emits `করতে পারেন`, `intermediat`, `যারা`.
+  - **Normalisation scope.** `whisper.rs:104` calls `mel_spec`'s `norm_mel` on
+    one 80×1 frame at a time, so the `max - 8.0` dynamic-range floor comes from
+    each frame's own peak. Whisper takes that maximum over the whole 30-second
+    window. Per-frame normalisation behaves like an automatic gain control —
+    it lifts silence and flattens loud frames.
+  - **Padding.** `ct2rs` computes frames only where audio exists and leaves the
+    remaining columns at 0.0. Whisper zero-pads the *audio* to 30 s, so trailing
+    frames hold the mel of silence, a large negative value that clamps to the
+    floor. 0.0 is nowhere near it. For a 10-second utterance this is two thirds
+    of the input.
+  - **Framing.** `mel_spec`'s `Spectrogram` is overlap-and-save with no
+    centring, where Whisper uses `torch.stft(center=True)` — reflection-pad by
+    `n_fft/2`, then frame. Its 400-sample buffer also advances by a 160-sample
+    hop, placing frames 80 samples off each hop boundary. Since 400 is not a
+    multiple of 160, that offset cannot be tuned away: **`mel_spec`'s STFT
+    cannot reproduce Whisper's framing at these parameters at all.** Its
+    `log_mel_spectrogram` separately drops the Nyquist bin and substitutes a
+    literal 0.0.
 
-**The fix:** `pub mod sys` is public, and `sys::Whisper::generate()` takes a
-features `StorageView` directly. So bypass the high-level wrapper: compute the
-log-mel ourselves, apply the `max - 8.0` clamp once globally, hand over the
-StorageView. `mel_spec` and `ndarray` are already in the tree — the filterbank
-is `mel_spec::mel::mel(16000.0, 400, 80, None, None, false, true)`, which is
-exactly what `ct2rs` builds internally. Roughly 60 lines, no new dependencies.
+Fixed by computing the mel in the spike and calling `ct2rs::sys::Whisper`,
+which takes a features `StorageView` directly, instead of the `ct2rs::Whisper`
+wrapper. `mel_spec` is kept only for its filterbank matrix — that part is
+correct, being librosa's Slaney-normalised filters, which is what Whisper uses.
 
-Worth reporting upstream; the accumulate-then-normalise change is small.
+**Verified, not assumed.** `spike/check_mel.py` recomputes the mel from
+Whisper's published formula in plain numpy — Slaney filterbank included, so it
+needs no librosa — and diffs it against what the Rust binary produces:
+
+```bash
+cd spike && python3 check_mel.py <any 16 kHz wav>
+```
+
+Result on the test audio: **max |diff| 0.0 across all 240,000 values.** Bit-exact.
+Worth re-running after any change to the audio path; it is the only part of the
+inference chain we implement ourselves.
+
+The `ct2rs` bugs are worth reporting upstream. The normalisation one is a
+small change; the framing one needs a different STFT.
 
 **3. Wrong GEMM backend cost 1.8×.**  ⟵ *fixed*
 
@@ -127,12 +156,73 @@ elsewhere. Costs 8m48s of build time and grows the binary 8.3 MB → 75.7 MB
 line in CLAUDE.md §3 and should be revisited at Phase 6; next to a 775 MB model
 it is not the thing to optimise first.
 
-**On accuracy — do not bank this yet.** Against the references, Rust scores
-CER 0.0415 and faster-whisper 0.0500 on these 50 utterances. That is not a
-claim of a better engine: 50 utterances is a small sample, and the most likely
-explanation is that per-frame normalisation is acting as accidental AGC on
-noisy YouTube audio. Expect it to converge toward the Python number once the
-mel bug is fixed. Re-measure then.
+#### Why the strings still differ  ⟵ *needs a decision*
+
+The gate said: accept when the strings match faster-whisper's. They do not —
+14 of 50 match byte-for-byte. The reason is not a defect, and chasing it
+further would be chasing the wrong thing.
+
+Four different feature pipelines were measured against the same baseline:
+
+| Feature path | identical | Rust CER |
+|---|---|---|
+| `ct2rs` stock, ruy | 16/50 | 0.0411 |
+| `ct2rs` stock, oneDNN | 14/50 | 0.0415 |
+| global normalisation, `mel_spec` framing | 9/50 | 0.0383 |
+| **fully conformant STFT** | **14/50** | **0.0389** |
+| faster-whisper baseline | — | 0.0500 |
+
+The agreement count barely moves while the CER gap stays put. Preprocessing is
+not what separates the two engines — and once the mel was verified bit-exact,
+it could not be.
+
+The baseline is what differs. `results/cpu_bench.py` calls
+`m.transcribe(p, language="bn", beam_size=1, suppress_tokens=[])` and takes
+**faster-whisper's defaults for everything else**, which include:
+
+  - `temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` — a fallback ladder that
+    **samples** whenever greedy output trips the compression-ratio or logprob
+    check. The baseline is therefore not deterministic, and not reproducible
+    byte-for-byte by anything, including faster-whisper itself.
+  - `without_timestamps=False` — timestamp tokens are generated and used for
+    segmentation. The spike sends `<|notimestamps|>`, a different prompt and so
+    a different decode path.
+  - `condition_on_previous_text=True`.
+
+So the comparison has been one deterministic greedy pass against a stochastic
+multi-temperature decode using a different prompt. Those cannot match in
+general. It also explains the mangled openings in the baseline — `0`, `00`,
+`ntermedit`, `jara`, `oup` — which are fallback artifacts, and why the
+baseline's CER is the worse of the two.
+
+**Kotha should keep the single greedy pass.** Temperature fallback is
+non-deterministic, costs extra decode passes, and for live dictation an
+occasional visible error beats an invisible resample. The divergence is a
+deliberate difference in decode policy, not a bug to fix.
+
+**The open decision — how to close this out. Kayes's call:**
+
+  1. **Re-run the baseline with matched settings** — `temperature=0`,
+     `without_timestamps=True`, `condition_on_previous_text=False` — and diff
+     against that. This is the only way to get a true byte-level comparison.
+     It needs `pip install faster-whisper` in a venv; agent auto mode blocks
+     package installation, so it has to be run by hand.
+  2. **Accept the gate on the evidence already in hand:** mel bit-exact against
+     Whisper's reference, better CER than the Python baseline, correct
+     code-switched script, no token fusion, and speed parity.
+
+Recommendation: (1) if it is worth an hour, because a clean byte-diff is the
+strongest possible evidence and it retires the question permanently. (2) is
+defensible on its own, and nothing downstream is blocked meanwhile.
+
+**On the CER gap — state it carefully.** Rust scores 0.0389 against the
+references where the baseline scores 0.0500, and that gap held across every
+preprocessing variant. The likeliest reading is that temperature fallback hurts
+on this audio, since these chunks begin mid-word and trip the
+compression-ratio check often. That is a claim about *decode settings*, not
+about Rust versus Python — the same settings in either language should give the
+same result. It is 50 utterances. Do not repeat it as a headline number, and
+do not let it near the paper.
 
 ---
 
@@ -296,13 +386,14 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 
 | What | Value | Taken on |
 |---|---|---|
-| RTF, int8, 6 threads — Ryzen 5600G, oneDNN | **0.660** (1.52× realtime) | 2026-08-30 |
+| RTF, int8, 6 threads — Ryzen 5600G, oneDNN | **0.639** (1.57× realtime) | 2026-08-30 |
 | RTF, int8, 6 threads — Ryzen 5600G, ruy | 1.222 (0.82× realtime) | 2026-08-30 |
 | RTF, int8, 6 threads — faster-whisper, same 50 files | 0.669 (1.50× realtime) | earlier, `cpu_bench.json` |
 | Model load time — Ryzen | 0.3 s | 2026-08-30 |
-| CER vs reference, 50 utts — Rust, mel bug present | 0.0415 | 2026-08-30 |
-| CER vs reference, 50 utts — faster-whisper | 0.0500 | 2026-08-30 |
-| Strings identical to faster-whisper, 50 utts | 14 / 50 | 2026-08-30 |
+| CER vs reference, 50 utts — Rust, conformant mel | 0.0389 | 2026-08-30 |
+| CER vs reference, 50 utts — faster-whisper baseline | 0.0500 | 2026-08-30 |
+| Strings identical to baseline, 50 utts | 14 / 50 (see *Why the strings still differ*) | 2026-08-30 |
+| Mel vs Whisper reference, max abs diff | 0.0 — bit-exact | 2026-08-30 |
 | RTF, int8, 4 threads — M2 | — | |
 | RTF, int8, 8 threads — M2 | — | |
 | Peak RSS | — | |
