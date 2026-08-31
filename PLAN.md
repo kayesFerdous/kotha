@@ -5,7 +5,11 @@ laid out visually is at
 <https://claude.ai/code/artifact/3107084e-3472-4798-918f-e47e3410785b>. This file is the working state:
 update it as phases complete. Last touched 2026-08-31.
 
-**Status: Phase 0 passes on the Arch/Ryzen machine, 2026-08-30.** `ct2rs` runs
+**Status: Phases 0, 1 and 2 pass on the Arch/Ryzen machine.** The loop runs
+end to end — microphone to VAD to model to clipboard — with the model held warm
+between utterances. The one box left in Phase 2 is talking into it.
+
+**Phase 0, 2026-08-30.** `ct2rs` runs
 this model at faster-whisper's speed and matching accuracy, agreeing with it on
 99.27% of characters once decode settings are matched, with feature extraction
 verified bit-exact against Whisper's reference. Four defects were
@@ -428,14 +432,96 @@ reading a misspelling off this output would be fitting the held-out set.
 
 ---
 
-### Phase 2 — The loop, no interface
+### Phase 2 — The loop, no interface  ⟵ PASSES on recorded speech
 
-- [ ] Hotkey → record → VAD → transcribe → clipboard
-- [ ] Model stays warm in memory between presses
-- [ ] Threads pinned to the measured-best count
+- [x] Record → VAD → transcribe → clipboard (`spike/src/bin/live.rs`)
+- [x] Model stays warm in memory between presses
+- [x] Threads pinned to the measured-best count — physical cores, via `num_cpus`
+- [ ] Hotkey — **deliberately deferred to Phase 4**, see below
+- [ ] Say something into the microphone and watch it appear
 
 **Accept when:** a terminal app prints what you said, twice in a row, with no
 model reload between them.
+
+#### Result — 2026-08-31
+
+```
+cargo run --release --bin live -- <model-dir>          # microphone
+cargo run --release --bin live -- <model-dir> x.wav    # same path, no mic
+```
+
+The chain runs end to end:
+
+```
+cpal → downmix → resample → earshot VAD → segment → Engine → clipboard
+```
+
+Three utterances from one 0.3 s model load, on 23 s of concatenated test audio
+with one-second pauses between:
+
+| # | audio | decode | |
+|---|---|---|---|
+| 1 | 7.2 s | 5.7 s | 1.26× realtime |
+| 2 | 7.6 s | 5.9 s | 1.29× realtime |
+| 3 | 7.9 s | 3.4 s | 2.32× realtime |
+
+The VAD cut at both pauses, on the beat. English came out in Latin script with
+spaces intact — no fusion, so `suppress_tokens` is still behaving on this path.
+Decode time tracks the *token count*, not the audio length, which is why the
+short third utterance is nearly twice as fast per second of audio.
+
+**What is verified and what is not.** The microphone leg opens correctly —
+PipeWire hands over 16 kHz mono I16 directly, so `pick_config` finds a native
+rate and no resampling happens on this machine — and fourteen seconds of room
+silence produced zero false triggers. It has not yet heard a human voice: that
+last box needs Kayes to talk into it. Everything upstream and downstream of the
+microphone is proven on real recorded speech through the identical code path.
+
+**The engine moved to `spike/src/lib.rs`** so the gate binary and the loop share
+one decode path rather than drifting apart. The move is proven faithful twice
+over: `check_mel.py` still reports max |diff| 0.0, and five files re-decoded
+through the gate are byte-identical to the cached 393-utterance decode.
+
+#### Two things left out on purpose
+
+**The hotkey.** The acceptance test is "a terminal app prints what you said",
+and a global hotkey is not what that gates. It also arrives for free in Phase 4:
+the shell is Tauri, so the hotkey is `tauri-plugin-global-shortcut`, and wiring
+`rdev` now — which on Wayland needs its own permission dance — would be building
+something Phase 4 deletes. `live` listens continuously instead, which is
+strictly more demanding of the VAD than push-to-talk. **`rdev` should probably
+come off the stack table in CLAUDE.md §3** once Phase 4 confirms the plugin
+covers it.
+
+**The spelling corrector.** It is a pure `String → String` at the end of this
+pipeline. It plugs in where `emit()` prints, once ported to Rust — and the port
+is not the transliteration it looks like: `build_dictionary()` reads `wordfreq`
+and the training manifest at *runtime*, and neither exists on a user's machine.
+The port therefore needs a baked dictionary artifact (word → zipf, ~50 k
+entries) shipped with the app. That is a real design decision, not a
+translation, and it is the first thing to settle when the port starts.
+
+#### Segmentation numbers
+
+Ordinary dictation values, not tuned against anything — there is no held-out set
+for "where should a chunk end", and the only real failure mode (cutting
+mid-word) is audible.
+
+| | value | why |
+|---|---|---|
+| frame | 256 samples / 16 ms | earshot's fixed contract |
+| voice threshold | 0.5 | earshot's own documented split |
+| onset | 3 frames | a click or a door must not open a recording |
+| hangover | ~600 ms | a natural sentence pause |
+| pre-roll | ~256 ms | the VAD trips late; without this the first consonant is clipped and the model has to guess at it |
+| minimum voiced | ~300 ms | below this it is noise, not speech |
+| forced cut | 25 s | under Whisper's 30 s window, so a monologue splits on *some* boundary instead of being truncated inside the model |
+
+`cargo test --bin live` covers the segmenter state machine (cut on silence,
+keep the pre-roll, discard a blip, never exceed the window) and that resampling
+preserves duration at 48 kHz, 44.1 kHz stereo and 16 kHz passthrough. The VAD's
+own judgement is not unit-tested — that needs real speech, which is what the
+file mode is for.
 
 ---
 
@@ -595,6 +681,10 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 | Strict English-F1, after corrector | **77.02** (+5.21, held out) | 2026-08-31 |
 | Non-Latin tokens modified by corrector | **0** of 393 utterances | 2026-08-31 |
 | Misspellings corrected | 236 of 545, ~91% precision | 2026-08-31 |
+| Live loop, utterances per model load | 3, load 0.3 s — Ryzen | 2026-08-31 |
+| Live decode, 7 s utterance — Ryzen, 6 threads | 5.7 s (1.26× realtime) | 2026-08-31 |
+| Mic format taken on Arch/PipeWire | 16 kHz mono I16, no resampling | 2026-08-31 |
+| False triggers in 14 s of room silence | 0 | 2026-08-31 |
 | Misspellings left standing | 309 of 4,299 English tokens | 2026-08-31 |
 | ...of those, protected by the floor | **90.0%** — real words, need context | 2026-08-31 |
 | ...reachable by a phonetic fallback | **17 tokens, ~+0.2 F1** — not built | 2026-08-31 |
