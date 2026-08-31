@@ -9,6 +9,8 @@
 //! Nothing here changed in the move. `KOTHA_DUMP_MEL=... check_mel.py` is the
 //! proof of that and must be re-run after any edit to this file.
 
+pub mod correct;
+
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};

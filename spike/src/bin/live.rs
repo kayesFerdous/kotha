@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use kotha_spike::correct::Corrector;
 use kotha_spike::{suspicious_fusion, Engine, N_SAMPLES, SAMPLE_RATE};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::audioadapter_buffers::owned::InterleavedOwned;
@@ -95,8 +96,28 @@ const PASTE_SETTLE: Duration = Duration::from_millis(400);
 fn main() -> Result<()> {
     let model_dir: PathBuf = std::env::args()
         .nth(1)
-        .context("usage: live <model-dir> [file.wav]")?
+        .context("usage: live <model-dir> [file.wav]  |  live --correct")?
         .into();
+
+    // The corrector on its own, as a stdin filter — no model, no microphone.
+    // This exists to be diffed against the Python prototype it was ported
+    // from, which has the identical mode:
+    //
+    //     live --correct < normalised.txt   |   correct.py < normalised.txt
+    //
+    // Token-level and whitespace-joined, matching the prototype exactly; the
+    // punctuation- and case-preserving path is `correct_text`, which is what
+    // the pipeline below uses.
+    if model_dir.as_os_str() == "--correct" {
+        let c = Corrector::new();
+        for line in std::io::stdin().lines() {
+            let line = line?;
+            let fixed: Vec<&str> =
+                line.split_whitespace().map(|t| c.correct_token(t)).collect();
+            println!("{}", fixed.join(" "));
+        }
+        return Ok(());
+    }
 
     let threads: usize = std::env::var("KOTHA_THREADS")
         .ok()
@@ -144,7 +165,13 @@ fn warm_up(model_dir: &Path, threads: usize) -> Result<Engine> {
 }
 
 /// Transcribe one segmented utterance and report it.
-fn emit(engine: &Engine, out: &mut Output, n: usize, utterance: &[f32]) -> Result<()> {
+fn emit(
+    engine: &Engine,
+    corrector: &Corrector,
+    out: &mut Output,
+    n: usize,
+    utterance: &[f32],
+) -> Result<()> {
     let secs = utterance.len() as f64 / SAMPLE_RATE as f64;
     let t = Instant::now();
     let text = engine.transcribe(utterance)?;
@@ -158,7 +185,16 @@ fn emit(engine: &Engine, out: &mut Output, n: usize, utterance: &[f32]) -> Resul
     if let Some(w) = suspicious_fusion(text) {
         eprintln!("    ⚠ {w} — check suppress_tokens");
     }
-    out.deliver(text);
+    // Phase 1, at the end of the pipeline where it always belonged: a pure
+    // String → String that repairs the English and cannot touch the Bengali.
+    // Both lines are printed when it fires, because the raw output is what a
+    // decode bug shows up in and the corrected one is what the user gets.
+    let fixed = corrector.correct_text(text);
+    if fixed != text {
+        println!("  → {fixed}");
+    }
+
+    out.deliver(&fixed);
     println!();
     Ok(())
 }
@@ -388,6 +424,7 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
     println!("input   {wav}  ({:.1}s)", samples.len() as f64 / SAMPLE_RATE as f64);
 
     let engine = warm_up(model_dir, threads)?;
+    let corrector = Corrector::new();
     let mut out = Output::open(paste_mode());
     let mut intake = Intake::new(SAMPLE_RATE, 1)?;
     let mut segmenter = Segmenter::new();
@@ -399,13 +436,13 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
     for chunk in samples.chunks(block) {
         for utterance in intake.feed(chunk, &mut segmenter)? {
             n += 1;
-            emit(&engine, &mut out, n, &utterance)?;
+            emit(&engine, &corrector, &mut out, n, &utterance)?;
         }
     }
     // The file ended without a trailing pause; take whatever is still open.
     if let Some(utterance) = segmenter.close() {
         n += 1;
-        emit(&engine, &mut out, n, &utterance)?;
+        emit(&engine, &corrector, &mut out, n, &utterance)?;
     }
 
     println!("{n} utterance(s) from one model load.");
@@ -432,6 +469,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
     let stream = build_stream(&device, &supported, tx)?;
 
     let engine = warm_up(model_dir, threads)?;
+    let corrector = Corrector::new();
     let mut out = Output::open(paste_mode());
 
     let quit = Arc::new(AtomicBool::new(false));
@@ -460,7 +498,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
         };
         for utterance in intake.feed(&block, &mut segmenter)? {
             n += 1;
-            emit(&engine, &mut out, n, &utterance)?;
+            emit(&engine, &corrector, &mut out, n, &utterance)?;
         }
     }
 

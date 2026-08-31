@@ -298,6 +298,25 @@ def selftest():
     print("selftest ok")
 
 
+def dump_dict(freq, path):
+    """Bake the dictionary out for the Rust port.
+
+    build_dictionary() reads wordfreq and the training manifest at *runtime*.
+    Neither exists on a user's machine, so the shipped app cannot build its own
+    dictionary -- it has to carry one. This writes that artifact: word, tab,
+    zipf, one per line, sorted. ~700 KB, which is nothing next to a 775 MB
+    model, and it is `include_str!`d straight into the binary so there is no
+    path to resolve and no missing-file case to handle.
+
+    Six decimal places is far more precision than the thresholds need (the
+    floor is 2.5) and costs a few bytes.
+    """
+    with open(path, "w") as f:
+        for w in sorted(freq):
+            f.write(f"{w}\t{freq[w]:.6f}\n")
+    print(f"wrote {path}: {len(freq)} words")
+
+
 def main():
     if "--selftest" in sys.argv:
         return selftest()
@@ -308,6 +327,8 @@ def main():
           f"(training split only)\n")
     if "--calibrate" in sys.argv:
         return calibrate(freq, index)
+    if "--dump-dict" in sys.argv:
+        return dump_dict(freq, "dict.tsv")
     c = Corrector(freq, index)
     for line in sys.stdin:
         print(c.correct(B.normalize_text(line)))
