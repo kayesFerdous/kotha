@@ -85,11 +85,12 @@ const PASTE_MODIFIER: Key = Key::Control; // Ctrl+V
 /// previous contents go back.
 ///
 // ponytail: a fixed delay, not a handshake. There is no portable way to be told
-// "the paste has been read", and on Wayland our own process serves the
-// selection — so restoring too early makes the target paste the *previous*
-// text, which is worse than never restoring at all. 250 ms is generous for a
-// local paste. Raise it if a slow application ever pastes stale text.
-const PASTE_SETTLE: Duration = Duration::from_millis(250);
+// "the paste has been read" — on Wayland our own process serves the selection,
+// but arboard does not surface that request. Restoring too early would make the
+// target paste the *previous* text, which is worse than never restoring at all,
+// so this errs long: 400 ms is invisible next to a multi-second decode. If a
+// loaded application ever pastes stale text, raise it.
+const PASTE_SETTLE: Duration = Duration::from_millis(400);
 
 fn main() -> Result<()> {
     let model_dir: PathBuf = std::env::args()
@@ -112,10 +113,23 @@ fn main() -> Result<()> {
     }
 }
 
-/// Synthetic input is opt-in. Sending keystrokes into whichever window happens
-/// to be focused is not something a spike should do because it was started.
-fn want_paste() -> bool {
-    matches!(std::env::var("KOTHA_PASTE").as_deref(), Ok("1") | Ok("true"))
+/// How the user asked for text to be delivered.
+///
+/// Synthetic input is opt-in twice over. Sending keystrokes into whichever
+/// window happens to be focused is not something to do because a program was
+/// started, and the portal route additionally raises a permission dialog — so
+/// that one has to be named. In the finished app this is a setting, and the
+/// dialog belongs in Phase 5's first-run walkthrough.
+///
+///     KOTHA_PASTE unset   clipboard only
+///     KOTHA_PASTE=1       clipboard + paste, no permission dialog
+///     KOTHA_PASTE=portal  clipboard + paste through the desktop portal
+fn paste_mode() -> (bool, bool) {
+    match std::env::var("KOTHA_PASTE").as_deref() {
+        Ok("portal") => (true, true),
+        Ok("1") | Ok("true") => (true, false),
+        _ => (false, false),
+    }
 }
 
 /// Load the model, print what it cost. Shared so both modes prove the same
@@ -172,7 +186,7 @@ struct Output {
 }
 
 impl Output {
-    fn open(paste: bool) -> Self {
+    fn open((paste, portal): (bool, bool)) -> Self {
         let clipboard = match arboard::Clipboard::new() {
             Ok(c) => Some(c),
             Err(e) => {
@@ -184,7 +198,7 @@ impl Output {
         };
 
         let mut how = "";
-        let keyboard = paste.then(connect_keyboard).and_then(|r| match r {
+        let keyboard = paste.then(|| connect_keyboard(portal)).and_then(|r| match r {
             Ok((k, backend)) => {
                 how = backend;
                 Some(k)
@@ -200,7 +214,7 @@ impl Output {
         match (&clipboard, &keyboard) {
             (Some(_), Some(_)) => println!("output  clipboard + synthetic paste ({how})"),
             (Some(_), None) => {
-                println!("output  clipboard only (KOTHA_PASTE=1 to paste at the cursor)")
+                println!("output  clipboard only (KOTHA_PASTE=1, or =portal, to paste at the cursor)")
             }
             (None, _) => println!("output  terminal only"),
         }
@@ -221,7 +235,14 @@ impl Output {
             return;
         };
 
-        let previous = cb.get_text().ok();
+        let borrowed = Borrowed::take(cb);
+        if let Borrowed::Unknown = borrowed {
+            // Pasting has to own the clipboard, so this cannot be avoided —
+            // only reported. Never drop data silently.
+            eprintln!("    note: the clipboard held something this app cannot \
+                       read back (a file list, or an app-specific format).");
+            eprintln!("          Pasting will replace it.");
+        }
         if let Err(e) = cb.set_text(text) {
             eprintln!("    clipboard write failed: {e}; not pasting");
             return;
@@ -233,8 +254,58 @@ impl Output {
             return;
         }
         std::thread::sleep(PASTE_SETTLE);
-        if let Some(p) = previous {
-            let _ = cb.set_text(&p);
+        borrowed.give_back(cb, text);
+    }
+}
+
+/// Whatever was on the clipboard before Kotha borrowed it to paste.
+///
+/// Pasting means owning the clipboard, so the user's own copied thing has to be
+/// displaced for a moment and then put back. Getting that wrong is the kind of
+/// bug that makes an app feel untrustworthy — you copy a link, dictate a
+/// sentence, and the link is gone.
+enum Borrowed {
+    Text(String),
+    /// A screenshot is a perfectly ordinary thing to have copied, and losing it
+    /// to a dictation would be worse than the dictation was worth.
+    Image(arboard::ImageData<'static>),
+    /// A file list, or an application's private format. It cannot be read back,
+    /// and pasting will overwrite it regardless — so this exists to be
+    /// *reported* rather than silently destroyed.
+    Unknown,
+    Nothing,
+}
+
+impl Borrowed {
+    fn take(cb: &mut arboard::Clipboard) -> Self {
+        match cb.get_text() {
+            Ok(t) if !t.is_empty() => return Self::Text(t),
+            Ok(_) => return Self::Nothing,
+            Err(_) => {}
+        }
+        match cb.get_image() {
+            Ok(img) => Self::Image(img),
+            Err(arboard::Error::ContentNotAvailable) => Self::Nothing,
+            Err(_) => Self::Unknown,
+        }
+    }
+
+    /// Put it back — but only if our text is still what is on the clipboard.
+    ///
+    /// If anything changed it in the meantime, that was the user copying
+    /// something, and overwriting their fresh copy with a stale backup would be
+    /// a worse bug than the one this is fixing.
+    fn give_back(self, cb: &mut arboard::Clipboard, ours: &str) {
+        // arboard::Error is not PartialEq, so compare the Ok side only.
+        if cb.get_text().map(|t| t != ours).unwrap_or(true) {
+            return;
+        }
+        match self {
+            Self::Text(t) => drop(cb.set_text(t)),
+            Self::Image(img) => drop(cb.set_image(img)),
+            // Nothing to put back. Leaving the dictated text is friendlier than
+            // clearing: if the paste missed, the user can still paste it again.
+            Self::Nothing | Self::Unknown => {}
         }
     }
 }
@@ -242,23 +313,41 @@ impl Output {
 /// Connect to exactly one input backend, and say which.
 ///
 /// enigo sends every keystroke through *all* the connections it managed to
-/// open, not the first that works. A Linux session with both a Wayland and an
-/// XWayland connection live therefore pastes **twice** — silently, and only on
-/// some compositors, which is the worst way for a bug like this to behave.
+/// open, not the first that works. A Linux session with two live connections
+/// therefore pastes **twice** — silently, and only on some compositors, which
+/// is the worst way for a bug like this to behave.
 ///
 /// The session is a runtime fact and enigo's backends are compile-time
 /// features, and `Settings` has no switch to turn one off. So the choice is
-/// made here by pointing the unwanted backend at a display that cannot exist.
+/// made here by pointing the unwanted backends at a display that cannot exist.
 ///
-/// Measured on KDE Plasma 6 / kwin_wayland, 2026-08-31: KWin does **not** offer
-/// `zwp_virtual_keyboard_v1`, so the Wayland attempt fails and this falls
-/// through to X11 — where the paste reaches XWayland clients but not native
-/// Wayland ones. wlroots compositors (Sway, Hyprland) do offer it, and there
-/// the first attempt wins and reaches everything.
+/// Three routes, in descending order of how much they can reach:
+///
+///   **portal** — libei through the XDG RemoteDesktop portal. Reaches every
+///   window, native Wayland included. Costs a permission dialog, so it is asked
+///   for by name (`KOTHA_PASTE=portal`) rather than sprung on anyone.
+///
+///   **wayland** — `zwp_virtual_keyboard_v1`. Reaches everything, no dialog,
+///   but only wlroots compositors (Sway, Hyprland) offer it. Measured on KDE
+///   Plasma 6 / kwin_wayland, 2026-08-31: KWin does **not**.
+///
+///   **x11** — XTEST. Reaches XWayland clients only; a native Wayland window
+///   never sees it. This is what KDE falls back to.
 #[cfg(target_os = "linux")]
-fn connect_keyboard() -> Result<(Enigo, &'static str), enigo::NewConError> {
+fn connect_keyboard(portal: bool) -> Result<(Enigo, &'static str), enigo::NewConError> {
     // A display name no socket will ever have, used to veto a backend.
     let nowhere = || Some("kotha-no-such-display".to_string());
+
+    if portal {
+        // Veto both others so libei is the only connection that can open —
+        // otherwise a machine where two succeed would paste twice.
+        return Enigo::new(&Settings {
+            x11_display: nowhere(),
+            wayland_display: nowhere(),
+            ..Default::default()
+        })
+        .map(|k| (k, "libei via the desktop portal — reaches every window"));
+    }
 
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         let wayland_only = Settings {
@@ -266,18 +355,21 @@ fn connect_keyboard() -> Result<(Enigo, &'static str), enigo::NewConError> {
             ..Default::default()
         };
         if let Ok(k) = Enigo::new(&wayland_only) {
-            return Ok((k, "wayland"));
+            return Ok((k, "wayland virtual keyboard — reaches every window"));
         }
     }
-    let x11_only = Settings {
+    Enigo::new(&Settings {
         wayland_display: nowhere(),
         ..Default::default()
-    };
-    Enigo::new(&x11_only).map(|k| (k, "x11/xwayland only — native Wayland apps will not receive it"))
+    })
+    .map(|k| {
+        (k, "x11/xwayland only — native Wayland windows will NOT receive it; \
+             try KOTHA_PASTE=portal")
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
-fn connect_keyboard() -> Result<(Enigo, &'static str), enigo::NewConError> {
+fn connect_keyboard(_portal: bool) -> Result<(Enigo, &'static str), enigo::NewConError> {
     Enigo::new(&Settings::default()).map(|k| (k, "native"))
 }
 
@@ -296,7 +388,7 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
     println!("input   {wav}  ({:.1}s)", samples.len() as f64 / SAMPLE_RATE as f64);
 
     let engine = warm_up(model_dir, threads)?;
-    let mut out = Output::open(want_paste());
+    let mut out = Output::open(paste_mode());
     let mut intake = Intake::new(SAMPLE_RATE, 1)?;
     let mut segmenter = Segmenter::new();
     let mut n = 0;
@@ -340,7 +432,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
     let stream = build_stream(&device, &supported, tx)?;
 
     let engine = warm_up(model_dir, threads)?;
-    let mut out = Output::open(want_paste());
+    let mut out = Output::open(paste_mode());
 
     let quit = Arc::new(AtomicBool::new(false));
     {
@@ -676,6 +768,39 @@ mod tests {
                 "{rate} Hz x{channels}: 1 s became {got} samples at 16 kHz, want ~{want}"
             );
         }
+    }
+
+    /// The clipboard must come back exactly as the user left it, and must NOT
+    /// be clobbered if they copied something while we were pasting. This is
+    /// the failure that would make the app feel untrustworthy.
+    ///
+    /// Touches the real system clipboard, so it skips where there is none.
+    #[test]
+    fn clipboard_is_borrowed_and_returned() {
+        let Ok(mut cb) = arboard::Clipboard::new() else {
+            eprintln!("no clipboard here; skipping");
+            return;
+        };
+        let theirs = "https://example.com/the-link-the-user-copied";
+        let ours = "আমার dictated text";
+
+        // The ordinary case: borrow it, paste, put it back.
+        cb.set_text(theirs).unwrap();
+        let borrowed = Borrowed::take(&mut cb);
+        assert!(matches!(borrowed, Borrowed::Text(ref t) if t == theirs));
+        cb.set_text(ours).unwrap();
+        borrowed.give_back(&mut cb, ours);
+        assert_eq!(cb.get_text().unwrap(), theirs, "the user's clipboard was not restored");
+
+        // The case that matters more: they copied something new while we were
+        // mid-paste. Their fresh copy must survive.
+        cb.set_text(theirs).unwrap();
+        let borrowed = Borrowed::take(&mut cb);
+        cb.set_text(ours).unwrap();
+        let fresh = "something they copied a moment ago";
+        cb.set_text(fresh).unwrap();
+        borrowed.give_back(&mut cb, ours);
+        assert_eq!(cb.get_text().unwrap(), fresh, "a stale backup overwrote a fresh copy");
     }
 
     #[test]
