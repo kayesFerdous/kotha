@@ -29,6 +29,18 @@
         "visible": false,
         "focus": false,
         "acceptFirstMouse": false
+      },
+      {
+        "label": "setup",
+        "title": "Welcome to Kotha",
+        "url": "setup.html",
+
+        "width": 460,
+        "height": 280,
+        "resizable": false,
+        "center": true,
+
+        "visible": false
       }
     ]
   },

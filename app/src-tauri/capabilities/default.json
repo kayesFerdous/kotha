@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The pill listens for two events and calls nothing. That is the whole surface it is given — see the contract at the top of app/ui/pill.js.",
-  "windows": ["pill"],
+  "description": "Both windows listen for events and neither is given anything else. The pill calls nothing at all — see the contract at the top of app/ui/pill.js. The first-run window calls one command, `start_download`, which needs no permission here because commands this app defines itself are not gated by capabilities; only core and plugin ones are.",
+  "windows": ["pill", "setup"],
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

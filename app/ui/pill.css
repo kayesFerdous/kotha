@@ -225,3 +225,98 @@ body {
   .bar { transition: none; animation: none; }
   [data-state="thinking"] .bar { height: calc(var(--bar-min) * 2); }
 }
+
+/* ==========================================================================
+   THE FIRST-RUN WINDOW  (setup.html)
+
+   A second window, and the opposite of the pill in every way that matters: an
+   ordinary decorated window that takes focus, because it has a button on it.
+   It lives in this file rather than one of its own so that the two windows
+   cannot drift apart on colour — everything below reads from the same :root
+   tokens the pill does.
+
+   Scoped under `body.setup`, which also has to undo the transparent,
+   overflow-hidden body the pill needs.
+   ========================================================================== */
+
+body.setup {
+  --pad: 28px;
+  display: block;
+  padding: var(--pad);
+  box-sizing: border-box;
+  height: 100%;
+  overflow: auto;
+  background: #18181b;
+  color: rgba(255, 255, 255, 0.92);
+  font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body.setup h1 {
+  margin: 0 0 10px;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+body.setup p {
+  margin: 0 0 16px;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+body.setup kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--pill-border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* One button, so it gets no modifiers and no variants. */
+body.setup button {
+  padding: 9px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bar-color);
+  color: #18181b;
+  font: 600 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+body.setup button:hover { background: #fff; }
+body.setup button:disabled { opacity: 0.4; cursor: default; }
+
+/* The progress meter. `--p` is 0..1 and setup.js writes nothing else.
+
+   Called `.meter` and not `.bar` because `.bar` is already taken, twenty-one
+   times over, by the waveform above — and an unscoped `.bar` here silently
+   restyled those too. Everything in this section is scoped under `body.setup`
+   for the same reason: one stylesheet, two windows, one namespace. */
+body.setup .meter {
+  height: 6px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+body.setup .meter::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: calc(var(--p, 0) * 100%);
+  border-radius: inherit;
+  background: var(--thinking);
+  transition: width 200ms linear;
+}
+
+body.setup .note { font-size: 13px; color: rgba(255, 255, 255, 0.5); }
+body.setup .note.bad { color: #f87171; }
+
+/* Three phases, one attribute on <body>, same idea as the pill's data-state:
+   what is on screen is a CSS question, and setup.js only ever names the
+   phase. */
+body.setup [data-phase] { display: none; }
+body.setup[data-phase="offer"]       [data-phase="offer"],
+body.setup[data-phase="downloading"] [data-phase="downloading"],
+body.setup[data-phase="ready"]       [data-phase="ready"] { display: block; }

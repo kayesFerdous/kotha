@@ -234,8 +234,83 @@ fn fetch_model(dir: &Path, mut progress: impl FnMut(u64, u64)) -> anyhow::Result
         finished += size;
     }
 
+    // Say so explicitly rather than relying on the last file's last chunk to
+    // land on the total: the files at the end of the list are often already
+    // complete, in which case they report nothing at all and the caller is left
+    // watching a bar stopped just short of full.
+    progress(total, total);
     println!("model   ready in {}", dir.display());
     Ok(())
+}
+
+/// Is there a model to load?
+///
+/// ponytail: "every file is there and not empty", which a download killed
+/// halfway would also satisfy. The checksum in `fetch_model` protects the
+/// normal path; a machine that lost power mid-download gets a load failure
+/// naming the directory to delete. A marker file would close it properly if
+/// anyone ever hits it.
+fn model_ready(dir: &Path) -> bool {
+    MODEL_FILES.iter().all(|f| on_disk(&dir.join(f)) > 0)
+}
+
+/// Run the download, reporting to the first-run window as it goes.
+///
+/// Errors are sent to the window rather than returned: the user is looking
+/// straight at it, and a failure they can read and retry is worth more than a
+/// line in a terminal they never opened.
+fn download(app: &AppHandle) {
+    let dir = model_dir(app);
+    let mut last_ui = 0u64;
+    let mut last_log = 0u64;
+
+    let result = fetch_model(&dir, |done, total| {
+        // Two rates: a megabyte for the bar, sixteen for the terminal. The
+        // terminal is a log and the bar is an animation, and they want very
+        // different amounts of noise.
+        if done == total || done.saturating_sub(last_ui) >= 1 << 20 {
+            last_ui = done;
+            let _ = app.emit("kotha://download", serde_json::json!({ "done": done, "total": total }));
+        }
+        if done == total || done.saturating_sub(last_log) >= 16 << 20 {
+            last_log = done;
+            println!("model   {} / {} MB", done >> 20, total >> 20);
+        }
+    });
+
+    if let Err(e) = result {
+        eprintln!("model   download failed: {e:#}");
+        let _ = app.emit("kotha://download", serde_json::json!({ "error": format!("{e:#}") }));
+    }
+}
+
+/// Bring up the first-run window, focused — the one window in this app that
+/// is *supposed* to take focus, because it has a button on it.
+fn show_setup(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("setup") else {
+        eprintln!("no window labelled `setup` — check tauri.conf.json");
+        return;
+    };
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
+/// The only thing the UI is allowed to ask Rust to do.
+///
+/// The pill's contract is one-way by design (see the header of `pill.js`) and
+/// stays that way. The first-run window is the exception, and it is the exception
+/// for one reason: 778 MB should not leave without somebody pressing a button.
+#[tauri::command]
+fn start_download(app: AppHandle) {
+    let session = app.state::<Session>();
+    if session.tx.lock().map(|tx| tx.send(Cmd::Fetch).is_ok()).unwrap_or(false) {
+        return;
+    }
+    eprintln!("worker is gone — the download cannot start");
+    let _ = app.emit(
+        "kotha://download",
+        serde_json::json!({ "error": "Kotha's worker thread is not running. Restart the app." }),
+    );
 }
 
 /// Bytes already on disk, or 0 — a missing file and an empty one are the same
@@ -366,6 +441,9 @@ fn idle_stop() -> Option<Duration> {
 enum Cmd {
     Start,
     Stop,
+    /// Download the model. Sent by the first-run window's button, and by
+    /// nothing else — the 778 MB is never spent without being asked for.
+    Fetch,
 }
 
 /// The app's state: whether a dictation is running, and how to reach the
@@ -383,6 +461,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
+        .invoke_handler(tauri::generate_handler![start_download])
         .setup(move |app| {
             let pill = app
                 .get_webview_window("pill")
@@ -420,6 +499,15 @@ fn main() {
                              On Wayland the underlying crate binds through X11, \
                      which the compositor may not expose."
                 ),
+            }
+
+            // A first run has no model, and 778 MB is not something to start
+            // behind the user's back on a keystroke they pressed expecting to
+            // dictate. So the window comes up at launch, says what it needs,
+            // and waits to be told.
+            if !model_ready(&model_dir(app.handle())) {
+                println!("model   missing — first run");
+                show_setup(app.handle());
             }
 
             // One long-lived worker owns the engine, so the model is loaded
@@ -534,9 +622,25 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
         // A Stop with nothing running is ordinary — the dictation may have
         // already ended on its own. Ignore it rather than treating it as an
         // error.
-        if !matches!(cmd, Cmd::Start) {
+        match cmd {
+            Cmd::Stop => continue,
+            Cmd::Fetch => {
+                download(&app);
+                continue;
+            }
+            Cmd::Start => {}
+        }
+
+        // The hotkey does not spend 778 MB. If the model is not there, the
+        // first-run window comes up and asks — which is the whole point of it
+        // existing, and the reason `dictate` no longer downloads anything.
+        if !model_ready(&model_dir(&app)) {
+            println!("model   not downloaded yet — opening the first-run window");
+            show_setup(&app);
+            app.state::<Session>().listening.store(false, Ordering::SeqCst);
             continue;
         }
+
         if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
             // Never leave the pill up on a failure: the user pressed a key and
             // deserves to be told, not to be left looking at a frozen pill.
@@ -568,23 +672,14 @@ fn dictate(
     // dictated yet has no business holding 1.4 GB resident.
     if engine.is_none() {
         let dir = model_dir(app);
-        // 778 MB, once, on the first dictation ever — the same trigger as the
-        // load itself, so a tray app that has not dictated yet neither holds
-        // 1.4 GB nor spends the user's bandwidth. Progress goes to stdout for
-        // now; the pill learns about it next.
-        // `done` can go backwards when a server refuses to resume, so the
-        // gate is saturating rather than a plain subtraction.
-        let mut last = 0u64;
-        fetch_model(&dir, |done, total| {
-            if done == total || done.saturating_sub(last) >= 16 << 20 {
-                last = done;
-                println!("model   {} / {} MB", done >> 20, total >> 20);
-            }
-        })?;
-
         let t = std::time::Instant::now();
         *engine = Some(Engine::load(&dir, threads).map_err(|e| {
-            e.context(format!("could not load the model from {}", dir.display()))
+            e.context(format!(
+                "could not load the model from {}. If a download was interrupted \
+                 the files there may be incomplete — delete the directory and \
+                 start Kotha again.",
+                dir.display()
+            ))
         })?);
         println!("model   {} threads, loaded in {:.1}s", threads, t.elapsed().as_secs_f64());
     }
@@ -600,7 +695,10 @@ fn dictate(
         match rx.try_recv() {
             Ok(Cmd::Stop) => break "hotkey",
             Err(mpsc::TryRecvError::Disconnected) => break "shutdown",
-            Ok(Cmd::Start) | Err(mpsc::TryRecvError::Empty) => {}
+            // A Fetch arriving mid-dictation means the model is already
+            // there and somebody pressed the button anyway. Ignoring it beats
+            // interrupting a live dictation to re-verify 778 MB.
+            Ok(Cmd::Start) | Ok(Cmd::Fetch) | Err(mpsc::TryRecvError::Empty) => {}
         }
 
         let block = match blocks.recv_timeout(POLL) {
