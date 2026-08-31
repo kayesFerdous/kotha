@@ -7,7 +7,9 @@ update it as phases complete. Last touched 2026-08-31.
 
 **Status: Phases 0, 1 and 2 pass on the Arch/Ryzen machine.** The loop runs
 end to end — microphone to VAD to model to clipboard — with the model held warm
-between utterances. The one box left in Phase 2 is talking into it.
+between utterances, verified against live speech. One known defect carried
+forward: Whisper repetition loops on roughly a quarter of live utterances, with
+the fix deferred by decision (Phase 2, *repetition loops*).
 
 **Phase 0, 2026-08-30.** `ct2rs` runs
 this model at faster-whisper's speed and matching accuracy, agreeing with it on
@@ -432,13 +434,13 @@ reading a misspelling off this output would be fitting the held-out set.
 
 ---
 
-### Phase 2 — The loop, no interface  ⟵ PASSES on recorded speech
+### Phase 2 — The loop, no interface  ⟵ PASSES
 
 - [x] Record → VAD → transcribe → clipboard (`spike/src/bin/live.rs`)
 - [x] Model stays warm in memory between presses
 - [x] Threads pinned to the measured-best count — physical cores, via `num_cpus`
 - [ ] Hotkey — **deliberately deferred to Phase 4**, see below
-- [ ] Say something into the microphone and watch it appear
+- [x] Say something into the microphone and watch it appear
 
 **Accept when:** a terminal app prints what you said, twice in a row, with no
 model reload between them.
@@ -470,12 +472,51 @@ spaces intact — no fusion, so `suppress_tokens` is still behaving on this path
 Decode time tracks the *token count*, not the audio length, which is why the
 short third utterance is nearly twice as fast per second of audio.
 
-**What is verified and what is not.** The microphone leg opens correctly —
-PipeWire hands over 16 kHz mono I16 directly, so `pick_config` finds a native
-rate and no resampling happens on this machine — and fourteen seconds of room
-silence produced zero false triggers. It has not yet heard a human voice: that
-last box needs Kayes to talk into it. Everything upstream and downstream of the
-microphone is proven on real recorded speech through the identical code path.
+**Live, into the microphone — 2026-08-31.** Eight utterances, one model load,
+code-switching handled as designed:
+
+```
+[1] 3.8s → 3.7s   hey how are you I all fine thank you
+[2] 3.5s → 3.3s   আচ্ছা তোমার সাথে কিছু কথা বলতে চাই।
+[4] 4.0s → 3.6s   কালকে আমার examp please আমার জন্য একটু pray করো।
+[8] 4.6s → 3.3s   আমি শুনলাম তোমাকে তুমি নাকি একটু sick?
+```
+
+English in Latin script, inside Bangla matrix speech, at roughly 1× realtime on
+short utterances. `examp` for `exam` is exactly the corrector's target. PipeWire
+hands over 16 kHz mono I16 directly, so no resampling happens on this machine,
+and fourteen seconds of room silence produced zero false triggers.
+
+#### The one real defect the live run exposed: repetition loops
+
+Two of the eight utterances collapsed into a loop:
+
+```
+[6] আর that that that that that ... that thathat that      (3.4s audio, 9.1s decode)
+[7] কথা কথা কথা কথা কথা করতে করতে করতে করতে হবে।
+```
+
+This is Whisper's classic greedy-decode failure. faster-whisper hides it with
+the temperature-fallback ladder — decode greedily, and if the compression ratio
+looks degenerate, re-decode with sampling. Phase 0 deliberately turned that
+ladder off to get a reproducible byte-diff, and never turned it back on.
+
+The decode time gives it away on its own: 9.1 s for 3.4 s of audio, against
+~1× realtime everywhere else. That makes it cheaply detectable without any
+text analysis.
+
+`WhisperOptions` carries two levers, both unused today:
+
+- `repetition_penalty` (default 1.0) — the safer one.
+- `no_repeat_ngram_size` (default 0) — **probably wrong for this language.**
+  Reduplication is grammatical in Bengali: `করতে করতে` means "while doing" and
+  is correct at n=2. A hard n-gram ban would break real speech to fix a decode
+  bug. [7] is a loop *because it runs to four*, not because it repeats at all.
+
+So the fix is not a one-liner to be guessed at — it needs a sweep on the 393
+with the strict-F1 and CER harness that already exists. Deferred by decision,
+2026-08-31, not overlooked. **Detecting** the loop is much easier than
+preventing it, and re-decoding just those utterances is the cheap first move.
 
 **The engine moved to `spike/src/lib.rs`** so the gate binary and the loop share
 one decode path rather than drifting apart. The move is proven faithful twice
@@ -685,6 +726,8 @@ project — that hardware is a Ryzen 5600G, this is an M2.
 | Live decode, 7 s utterance — Ryzen, 6 threads | 5.7 s (1.26× realtime) | 2026-08-31 |
 | Mic format taken on Arch/PipeWire | 16 kHz mono I16, no resampling | 2026-08-31 |
 | False triggers in 14 s of room silence | 0 | 2026-08-31 |
+| Live speech, utterances per model load | 8, one load | 2026-08-31 |
+| Live utterances lost to repetition loops | 2 of 8 — known, deferred | 2026-08-31 |
 | Misspellings left standing | 309 of 4,299 English tokens | 2026-08-31 |
 | ...of those, protected by the floor | **90.0%** — real words, need context | 2026-08-31 |
 | ...reachable by a phonetic fallback | **17 tokens, ~+0.2 F1** — not built | 2026-08-31 |
