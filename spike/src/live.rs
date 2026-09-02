@@ -143,8 +143,12 @@ pub fn run() -> Result<()> {
 /// Synthetic input is opt-in twice over. Sending keystrokes into whichever
 /// window happens to be focused is not something to do because a program was
 /// started, and the portal route additionally raises a permission dialog — so
-/// that one has to be named. In the finished app this is a setting, and the
-/// dialog belongs in Phase 5's first-run walkthrough.
+/// that one has to be named.
+///
+/// The app now carries this as a setting — the tray's Text output submenu,
+/// saved in `settings.json` — and reads `KOTHA_PASTE` only as an override. This
+/// function is what the spike binaries still use, and what that override goes
+/// through.
 ///
 /// ```text
 /// KOTHA_PASTE unset   clipboard only
@@ -256,7 +260,8 @@ impl Output {
         match (&clipboard, &keyboard) {
             (Some(_), Some(_)) => println!("output  clipboard + synthetic paste ({how})"),
             (Some(_), None) => {
-                println!("output  clipboard only (KOTHA_PASTE=1, or =portal, to paste at the cursor)")
+                println!("output  clipboard only — Text output in the tray menu, \
+                          or KOTHA_PASTE=1 / =portal, to paste at the cursor")
             }
             (None, _) => println!("output  terminal only"),
         }

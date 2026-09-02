@@ -38,7 +38,9 @@
 //!                ./models/whisper-medium-bn-en-cs-faster if that exists and
 //!                otherwise downloads to the app data directory.
 //! KOTHA_THREADS  decode threads (default: physical cores).
-//! KOTHA_PASTE    unset = clipboard only, 1 = synthetic paste, portal = libei.
+//! KOTHA_PASTE    overrides the tray's Text output setting for one run:
+//!                unset = use the setting, 1 = synthetic paste, portal = libei,
+//!                anything else = clipboard only.
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -54,7 +56,7 @@ use kotha_spike::correct::Corrector;
 use kotha_spike::live::{self, Microphone, Output, Segmenter};
 use kotha_spike::{suspicious_fusion, Engine};
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -615,7 +617,8 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
     let threads = live::decode_threads();
 
     let corrector = Corrector::new();
-    let mut out = Output::open(live::paste_mode());
+    let mut mode = paste_setting(&app);
+    let mut out = Output::open(paste_flags(&mode));
     let mut engine: Option<Engine> = None;
 
     while let Ok(cmd) = rx.recv() {
@@ -639,6 +642,15 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
             show_setup(&app);
             app.state::<Session>().listening.store(false, Ordering::SeqCst);
             continue;
+        }
+
+        // The tray can change this between dictations. Reopening costs a
+        // clipboard handle and, on the portal route, the permission dialog — so
+        // only when the choice actually changed, and never mid-dictation.
+        let chosen = paste_setting(&app);
+        if chosen != mode {
+            mode = chosen;
+            out = Output::open(paste_flags(&mode));
         }
 
         if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
@@ -861,20 +873,108 @@ fn place(w: &WebviewWindow) -> tauri::Result<()> {
     ))
 }
 
+/// The three ways text can leave Kotha, as they appear in the tray menu.
+///
+/// The id is what lands in `settings.json`, so a hand-edited file and a menu
+/// click cannot mean different things.
+const PASTE_MODES: [(&str, &str); 3] = [
+    ("copy", "Clipboard only"),
+    ("paste", "Paste at the cursor"),
+    ("portal", "Paste at the cursor (portal)"),
+];
+
+/// One file, one JSON object. The hotkey and the microphone add keys here.
+fn settings_path(app: &AppHandle) -> PathBuf {
+    app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from(".")).join("settings.json")
+}
+
+/// `KOTHA_PASTE`, if it is set, as a mode id.
+///
+/// It still wins over the setting: it is the documented way to test the three
+/// routes, and every note in PLAN.md Phase 3 is written in terms of it. When it
+/// is set the menu shows what it forced and refuses to be clicked, rather than
+/// offering a choice that would not take effect.
+fn paste_env() -> Option<&'static str> {
+    match std::env::var("KOTHA_PASTE").ok()?.as_str() {
+        "portal" => Some("portal"),
+        "1" | "true" => Some("paste"),
+        _ => Some("copy"),
+    }
+}
+
+/// The chosen mode: the environment, then the file, then clipboard-only.
+fn paste_setting(app: &AppHandle) -> String {
+    paste_env().map(str::to_string).unwrap_or_else(|| paste_choice(&settings_path(app)))
+}
+
+fn settings_at(path: &Path) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v.is_object().then_some(v)
+}
+
+/// An unreadable, corrupt or unknown value means clipboard-only rather than a
+/// mode `Output::open` has never heard of.
+fn paste_choice(path: &Path) -> String {
+    settings_at(path)
+        .and_then(|v| v["paste"].as_str().map(str::to_string))
+        .filter(|m| PASTE_MODES.iter().any(|(id, _)| id == m))
+        .unwrap_or_else(|| "copy".into())
+}
+
+fn save_paste_choice(path: &Path, mode: &str) {
+    let mut v = settings_at(path).unwrap_or_else(|| serde_json::json!({}));
+    v["paste"] = serde_json::Value::String(mode.to_string());
+    if let Err(e) = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
+        .and_then(|()| std::fs::write(path, v.to_string()))
+    {
+        eprintln!("settings not saved to {}: {e}", path.display());
+    }
+}
+
+/// A mode id as `Output::open` wants it: (paste, portal).
+fn paste_flags(mode: &str) -> (bool, bool) {
+    match mode {
+        "portal" => (true, true),
+        "paste" => (true, false),
+        _ => (false, false),
+    }
+}
+
 fn tray(app: &AppHandle) -> tauri::Result<()> {
     // ponytail: a fixed label rather than one that flips to "Stop". The pill
     // on screen already says which state we are in, and keeping the menu item
     // in sync means holding it in app state. Worth it once there is a real
     // settings window to hang it off — Phase 5.
     let dictate = MenuItem::with_id(app, "dictate", "Dictate  ⌃⌥Space", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Kotha", true, None::<&str>)?;
+
+    // The first real setting, and the one worth having first: getting the paste
+    // route wrong is what cost an evening in Phase 3, and until now the only way
+    // to say it was an environment variable — which a shipped app has nobody to
+    // set. A tray submenu because it is three fixed choices; a settings *window*
+    // is Phase 7, and would be a window, a page and a capability entry for what
+    // the platform already draws.
+    let forced = paste_env().is_some();
+    let chosen = paste_setting(app);
+    let modes = PASTE_MODES
+        .iter()
+        .map(|(id, label)| {
+            CheckMenuItem::with_id(app, format!("paste:{id}"), label, !forced, *id == chosen, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let output = Submenu::with_items(
+        app,
+        if forced { "Text output  (KOTHA_PASTE)" } else { "Text output" },
+        true,
+        &modes.iter().map(|m| m as &dyn IsMenuItem<_>).collect::<Vec<_>>(),
+    )?;
+
     let menu = Menu::with_items(
         app,
         &[
             &dictate,
             &PredefinedMenuItem::separator(app)?,
-            &settings,
+            &output,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -889,10 +989,20 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("Kotha")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id.as_ref() {
+        .on_menu_event(move |app, event| match event.id.as_ref() {
             "dictate" => toggle(app),
             "quit" => app.exit(0),
-            _ => {}
+            id => {
+                let Some(mode) = id.strip_prefix("paste:") else { return };
+                // A check item toggles only itself when clicked, so the other
+                // two have to be told or the menu shows two ticks. These are
+                // radio buttons drawn as checkboxes; muda has no radio item.
+                for (item, (known, _)) in modes.iter().zip(PASTE_MODES) {
+                    let _ = item.set_checked(known == mode);
+                }
+                save_paste_choice(&settings_path(app), mode);
+                println!("output  {mode} — from the next dictation");
+            }
         })
         .build(app)?;
 
@@ -902,6 +1012,34 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The paste setting must round-trip, and must never hand `Output::open` a
+    /// mode it has never heard of.
+    ///
+    /// Both failure modes here are quiet ones: a junk value would silently
+    /// disable paste, and a corrupt file would panic on the index-assign in
+    /// `save_paste_choice` — inside a tray click handler, where nobody is
+    /// watching for a backtrace.
+    #[test]
+    fn the_paste_choice_round_trips_and_survives_junk() {
+        let path = std::env::temp_dir().join("kotha-settings-test.json");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(paste_choice(&path), "copy", "no file means clipboard only");
+
+        save_paste_choice(&path, "portal");
+        assert_eq!(paste_choice(&path), "portal");
+        assert_eq!(paste_flags("portal"), (true, true));
+
+        std::fs::write(&path, r#"{"paste":"telepathy"}"#).unwrap();
+        assert_eq!(paste_choice(&path), "copy", "an unknown mode must fall back");
+
+        // Not an object: `v["paste"] = ...` would panic on this.
+        std::fs::write(&path, "3").unwrap();
+        save_paste_choice(&path, "paste");
+        assert_eq!(paste_choice(&path), "paste");
+
+        std::fs::remove_file(&path).ok();
+    }
 
     /// Resuming a half-finished file must produce the same bytes as fetching it
     /// whole.
