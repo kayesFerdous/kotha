@@ -1,16 +1,21 @@
 /* ==========================================================================
    Kotha — the first-run window's behaviour.
 
-   THE CONTRACT, WHICH IS ONE EVENT AND ONE CALL
-   ---------------------------------------------
+   THE CONTRACT, WHICH IS ONE EVENT AND TWO CALLS
+   ----------------------------------------------
    The pill's contract is one-way: Rust emits, the UI listens, and the UI never
    calls into Rust (see the header of pill.js — that stays true). This window is
    the single exception in the app, and it exists for exactly one reason:
    778 MB should not leave without somebody pressing a button.
 
      invoke("start_download")                       // the button, and only it
+     invoke("hotkey_label") -> "Ctrl+Alt+Space"     // or null if nothing bound
      listen("kotha://download", { done, total })    // progress, ~1 per MB
      listen("kotha://download", { error })          // it went wrong, in words
+
+   The second call is asked, not pushed, because the answer is only wanted once
+   and asking has no race — an event emitted while this file was still parsing
+   would simply be missed.
 
    One event with two shapes rather than two events, because the window only
    ever asks one question of it: is this still going?
@@ -33,6 +38,7 @@ const body = document.body;
 const meter = document.querySelector(".meter");
 const progress = document.getElementById("progress");
 const button = document.getElementById("go");
+const how = document.getElementById("how");
 
 const MB = 1024 * 1024;
 
@@ -49,6 +55,23 @@ function show(done, total) {
     `${Math.round(done / MB)} of ${Math.round(total / MB)} MB`;
 }
 
+/**
+ * What the "Ready" panel tells the user to do. The whole sentence, because the
+ * two versions of it are not the same sentence with a word swapped.
+ *
+ * Naming a key that is not bound would be worse than naming none: pressing it
+ * is the very first thing a new user does with this window.
+ */
+function ready(key) {
+  const kbd = (k) => `<kbd>${k}</kbd>`;
+  how.innerHTML = key
+    ? `Press ${key.split("+").map(kbd).join(" + ")} anywhere, say something, and
+       press it again. The text lands where your cursor is.`
+    : `Another application already has Kotha's hotkey, so there is nothing to
+       press yet — pick a different one under <b>Hotkey</b> in the tray menu.
+       Until then, the tray icon's <b>Dictate</b> starts one.`;
+}
+
 function failed(message) {
   phase("downloading");
   progress.textContent = message;
@@ -60,7 +83,13 @@ function onProgress({ done, total, error }) {
   else show(done, total);
 }
 
-button.addEventListener("click", () => {
+button.addEventListener("click", (e) => {
+  window.__DIAG = JSON.stringify({
+    trusted: e.isTrusted, detail: e.detail, type: e.type,
+    x: e.clientX, y: e.clientY, pointerId: e.pointerId,
+    active: document.activeElement && document.activeElement.id,
+    at: Math.round(performance.now()),
+  });
   button.disabled = true;
   phase("downloading");
   progress.classList.remove("bad");
@@ -76,11 +105,13 @@ if (window.__TAURI__) {
   const { listen } = window.__TAURI__.event;
 
   listen("kotha://download", (e) => onProgress(e.payload));
-  start = () => invoke("start_download");
+  invoke("hotkey_label").then(ready);
+  start = () => invoke("start_download", { why: window.__DIAG });
 } else {
   /* ----------------------------------------------------------------- mock */
   console.info("kotha: no backend, faking the download");
 
+  ready("Ctrl+Alt+Space");
   const TOTAL = 778 * MB;
   start = () => {
     let done = 0;

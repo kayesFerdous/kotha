@@ -313,6 +313,19 @@ fn start_download(app: AppHandle) {
     );
 }
 
+/// Which key the "Ready" panel should tell the user to press, or `None` if
+/// nothing is bound.
+///
+/// Computed rather than stored: the hotkey can be changed from the tray after
+/// this window is already open, and registration can fail — in which case the
+/// panel must not name a key that does nothing. That is the whole reason this
+/// is not a string in the HTML any more.
+#[tauri::command]
+fn hotkey_label(app: AppHandle) -> Option<String> {
+    let k = hotkey(&app);
+    app.global_shortcut().is_registered(k.as_str()).then_some(k)
+}
+
 /// Bytes already on disk, or 0 — a missing file and an empty one are the same
 /// thing to a resume.
 fn on_disk(path: &Path) -> u64 {
@@ -461,7 +474,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
-        .invoke_handler(tauri::generate_handler![start_download])
+        .invoke_handler(tauri::generate_handler![start_download, hotkey_label])
         .setup(move |app| {
             let pill = app
                 .get_webview_window("pill")
