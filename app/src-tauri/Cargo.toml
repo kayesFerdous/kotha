@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# The .deb's `Maintainer:` field comes from here — `authors` wins over
+# tauri.conf.json's `publisher`, and Debian wants `Name <email>`. `publisher`
+# stays the plain name, which is the right shape for Windows' MSI manufacturer
+# and macOS, where an address in that field would look odd.
+authors = ["Kayes Ferdous <kayesfardows@gmail.com>"]
+
 [build-dependencies]
-tauri-build = "2"
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }

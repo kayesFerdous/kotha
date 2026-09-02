@@ -9,7 +9,7 @@
    778 MB should not leave without somebody pressing a button.
 
      invoke("start_download")                       // the button, and only it
-     invoke("hotkey_label") -> "Ctrl+Alt+Space"     // or null if nothing bound
+     invoke("hotkey_label") -> "F9"                  // or null if nothing bound
      listen("kotha://download", { done, total })    // progress, ~1 per MB
      listen("kotha://download", { error })          // it went wrong, in words
 
@@ -111,7 +111,7 @@ if (window.__TAURI__) {
   /* ----------------------------------------------------------------- mock */
   console.info("kotha: no backend, faking the download");
 
-  ready("Ctrl+Alt+Space");
+  ready("F9");
   const TOTAL = 778 * MB;
   start = () => {
     let done = 0;

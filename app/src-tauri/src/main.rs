@@ -29,7 +29,7 @@
 //! cargo run -p kotha --release
 //! ```
 //!
-//! Then press Ctrl+Alt+Space, or use the tray icon.
+//! Then press F9, or use the tray icon. The key is settable — see `HOTKEYS`.
 //!
 //! Environment:
 //!
@@ -950,18 +950,30 @@ fn paste_choice(path: &Path) -> String {
         .unwrap_or_else(|| "copy".into())
 }
 
-/// The hotkeys the tray offers, in Tauri's accelerator syntax.
+/// The hotkeys the tray offers, in Tauri's accelerator syntax. The first is the
+/// default.
 ///
 /// A fixed list and not a key-capture widget: capturing a chord needs a focused
 /// window and a page to draw it on, and what this actually has to solve is a
-/// *collision*, not a preference. The default is the collision — `Ctrl+Alt+Space`
-/// is fcitx's and ibus's input-method switch, which on a Bangladeshi desktop is
-/// very likely already bound to Avro.
+/// *collision*, not a preference.
+///
+/// **F9 is the default, and `Ctrl+Alt+Space` is not, for two measured reasons.**
+/// That chord is fcitx's and ibus's input-method switch, so on a Bangladeshi
+/// desktop it is very likely already bound to Avro. And on Wayland the key
+/// reaches the focused application as well as us (PLAN.md, Phase 4 finding 5),
+/// where `Ctrl+Alt+Space` inserts a stray `^[^@` into whatever you were about to
+/// dictate into. F9 is delivered twice as well, but inserts nothing — so the
+/// defect is invisible on it. That is a dodge, not a fix; the portal route is
+/// still the fix.
+///
+/// The trade F9 makes is that a bare function key is easier for another
+/// application to claim — an IDE's build key, a browser extension — which is
+/// exactly what the rest of this list is for.
 ///
 /// The list is what the menu offers, not what is accepted. `hotkey` validates by
 /// parsing, so anything Tauri understands can be written into `settings.json` by
 /// hand and the menu will show it alongside these.
-const HOTKEYS: [&str; 4] = ["Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+D", "F9"];
+const HOTKEYS: [&str; 4] = ["F9", "Ctrl+Shift+Space", "Alt+Shift+D", "Ctrl+Alt+Space"];
 
 /// The chosen hotkey. Junk in the file falls back to the default rather than
 /// leaving the app with nothing bound.
