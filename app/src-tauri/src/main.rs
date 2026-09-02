@@ -44,6 +44,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -59,10 +60,7 @@ use kotha_spike::{suspicious_fusion, Engine};
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-
-/// PLAN.md's proposal, not yet final.
-const HOTKEY: (Modifiers, Code) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::Space);
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Where the model lives.
 ///
@@ -479,12 +477,13 @@ fn main() {
 
             tray(app.handle())?;
 
-            let shortcut = Shortcut::new(Some(HOTKEY.0), HOTKEY.1);
-            let pressed = shortcut;
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |app, sc, event| {
-                        if event.state() == ShortcutState::Pressed && *sc == pressed {
+                    .with_handler(|app, _, event| {
+                        // Exactly one shortcut is ever registered — the tray
+                        // unregisters before it binds another — so whatever
+                        // arrives here is it.
+                        if event.state() == ShortcutState::Pressed {
                             toggle(app);
                         }
                     })
@@ -494,8 +493,9 @@ fn main() {
             // Not fatal. On Wayland this is the call most likely to fail, and
             // the tray icon still works when it does — so say so and carry on
             // rather than refusing to start.
-            match app.global_shortcut().register(shortcut) {
-                Ok(()) => println!("hotkey  Ctrl+Alt+Space"),
+            let chosen = hotkey(app.handle());
+            match app.global_shortcut().register(chosen.as_str()) {
+                Ok(()) => println!("hotkey  {chosen}"),
                 Err(e) => eprintln!(
                     "hotkey  unavailable ({e}) — use the tray icon.\n\
                              On Wayland the underlying crate binds through X11, \
@@ -912,23 +912,54 @@ fn settings_at(path: &Path) -> Option<serde_json::Value> {
     v.is_object().then_some(v)
 }
 
-/// An unreadable, corrupt or unknown value means clipboard-only rather than a
-/// mode `Output::open` has never heard of.
-fn paste_choice(path: &Path) -> String {
-    settings_at(path)
-        .and_then(|v| v["paste"].as_str().map(str::to_string))
-        .filter(|m| PASTE_MODES.iter().any(|(id, _)| id == m))
-        .unwrap_or_else(|| "copy".into())
+/// One string setting, or `None` if the file is missing, corrupt, or silent
+/// about this key. Every caller supplies its own default and its own idea of
+/// what is valid, because those differ and the storage does not.
+fn setting(path: &Path, key: &str) -> Option<String> {
+    settings_at(path)?[key].as_str().map(str::to_string)
 }
 
-fn save_paste_choice(path: &Path, mode: &str) {
+fn save_setting(path: &Path, key: &str, value: &str) {
     let mut v = settings_at(path).unwrap_or_else(|| serde_json::json!({}));
-    v["paste"] = serde_json::Value::String(mode.to_string());
+    v[key] = serde_json::Value::String(value.to_string());
     if let Err(e) = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
         .and_then(|()| std::fs::write(path, v.to_string()))
     {
         eprintln!("settings not saved to {}: {e}", path.display());
     }
+}
+
+/// An unreadable, corrupt or unknown value means clipboard-only rather than a
+/// mode `Output::open` has never heard of.
+fn paste_choice(path: &Path) -> String {
+    setting(path, "paste")
+        .filter(|m| PASTE_MODES.iter().any(|(id, _)| id == m))
+        .unwrap_or_else(|| "copy".into())
+}
+
+/// The hotkeys the tray offers, in Tauri's accelerator syntax.
+///
+/// A fixed list and not a key-capture widget: capturing a chord needs a focused
+/// window and a page to draw it on, and what this actually has to solve is a
+/// *collision*, not a preference. The default is the collision — `Ctrl+Alt+Space`
+/// is fcitx's and ibus's input-method switch, which on a Bangladeshi desktop is
+/// very likely already bound to Avro.
+///
+/// The list is what the menu offers, not what is accepted. `hotkey` validates by
+/// parsing, so anything Tauri understands can be written into `settings.json` by
+/// hand and the menu will show it alongside these.
+const HOTKEYS: [&str; 4] = ["Ctrl+Alt+Space", "Ctrl+Shift+Space", "Alt+Shift+D", "F9"];
+
+/// The chosen hotkey. Junk in the file falls back to the default rather than
+/// leaving the app with nothing bound.
+fn hotkey(app: &AppHandle) -> String {
+    hotkey_choice(&settings_path(app))
+}
+
+fn hotkey_choice(path: &Path) -> String {
+    setting(path, "hotkey")
+        .filter(|h| Shortcut::from_str(h).is_ok())
+        .unwrap_or_else(|| HOTKEYS[0].to_string())
 }
 
 /// A mode id as `Output::open` wants it: (paste, portal).
@@ -945,8 +976,31 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
     // on screen already says which state we are in, and keeping the menu item
     // in sync means holding it in app state. Worth it once there is a real
     // settings window to hang it off — Phase 5.
-    let dictate = MenuItem::with_id(app, "dictate", "Dictate  ⌃⌥Space", true, None::<&str>)?;
+    let bound = hotkey(app);
+    let dictate =
+        MenuItem::with_id(app, "dictate", format!("Dictate  {bound}"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Kotha", true, None::<&str>)?;
+
+    // The offered list, plus whatever is actually bound if someone wrote a
+    // fifth thing into settings.json — an unticked menu is worse than a long
+    // one, and hiding a setting the app is obeying is how support tickets start.
+    let offered: Vec<String> = HOTKEYS
+        .iter()
+        .map(|k| k.to_string())
+        .chain((!HOTKEYS.contains(&bound.as_str())).then(|| bound.clone()))
+        .collect();
+    let keys = offered
+        .iter()
+        .map(|k| {
+            CheckMenuItem::with_id(app, format!("key:{k}"), k, true, *k == bound, None::<&str>)
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let hotkeys = Submenu::with_items(
+        app,
+        "Hotkey",
+        true,
+        &keys.iter().map(|m| m as &dyn IsMenuItem<_>).collect::<Vec<_>>(),
+    )?;
 
     // The first real setting, and the one worth having first: getting the paste
     // route wrong is what cost an evening in Phase 3, and until now the only way
@@ -974,6 +1028,7 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         &[
             &dictate,
             &PredefinedMenuItem::separator(app)?,
+            &hotkeys,
             &output,
             &PredefinedMenuItem::separator(app)?,
             &quit,
@@ -992,6 +1047,31 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "dictate" => toggle(app),
             "quit" => app.exit(0),
+            id if id.starts_with("key:") => {
+                let want = &id["key:".len()..];
+                let previous = hotkey(app);
+                if want == previous {
+                    return;
+                }
+                // Rebind before saving. A key another application already owns
+                // fails here, which is the whole reason this menu exists — and
+                // the one outcome that must not leave Kotha with nothing bound.
+                let gs = app.global_shortcut();
+                let _ = gs.unregister_all();
+                if let Err(e) = gs.register(want) {
+                    eprintln!("hotkey  {want} refused ({e}) — something else has it; keeping {previous}");
+                    if let Err(e) = gs.register(previous.as_str()) {
+                        eprintln!("hotkey  {previous} could not be taken back either ({e}) — use the tray icon");
+                    }
+                    return;
+                }
+                save_setting(&settings_path(app), "hotkey", want);
+                let _ = dictate.set_text(format!("Dictate  {want}"));
+                for (item, offer) in keys.iter().zip(&offered) {
+                    let _ = item.set_checked(offer == want);
+                }
+                println!("hotkey  {want}");
+            }
             id => {
                 let Some(mode) = id.strip_prefix("paste:") else { return };
                 // A check item toggles only itself when clicked, so the other
@@ -1000,7 +1080,7 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
                 for (item, (known, _)) in modes.iter().zip(PASTE_MODES) {
                     let _ = item.set_checked(known == mode);
                 }
-                save_paste_choice(&settings_path(app), mode);
+                save_setting(&settings_path(app), "paste", mode);
                 println!("output  {mode} — from the next dictation");
             }
         })
@@ -1013,20 +1093,21 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
 mod tests {
     use super::*;
 
-    /// The paste setting must round-trip, and must never hand `Output::open` a
-    /// mode it has never heard of.
+    /// Settings must round-trip, share one file without clobbering each other,
+    /// and never hand `Output::open` a mode — or the shortcut plugin a string —
+    /// that neither has heard of.
     ///
     /// Both failure modes here are quiet ones: a junk value would silently
     /// disable paste, and a corrupt file would panic on the index-assign in
     /// `save_paste_choice` — inside a tray click handler, where nobody is
     /// watching for a backtrace.
     #[test]
-    fn the_paste_choice_round_trips_and_survives_junk() {
+    fn settings_round_trip_and_survive_junk() {
         let path = std::env::temp_dir().join("kotha-settings-test.json");
         std::fs::remove_file(&path).ok();
         assert_eq!(paste_choice(&path), "copy", "no file means clipboard only");
 
-        save_paste_choice(&path, "portal");
+        save_setting(&path, "paste", "portal");
         assert_eq!(paste_choice(&path), "portal");
         assert_eq!(paste_flags("portal"), (true, true));
 
@@ -1035,8 +1116,21 @@ mod tests {
 
         // Not an object: `v["paste"] = ...` would panic on this.
         std::fs::write(&path, "3").unwrap();
-        save_paste_choice(&path, "paste");
+        save_setting(&path, "paste", "paste");
         assert_eq!(paste_choice(&path), "paste");
+
+        // Two settings share the file, so writing one must not lose the other.
+        save_setting(&path, "hotkey", "F9");
+        assert_eq!(hotkey_choice(&path), "F9");
+        assert_eq!(paste_choice(&path), "paste", "saving the hotkey dropped the paste mode");
+
+        // An unbindable string must fall back to the default rather than leave
+        // the app with nothing registered at all.
+        std::fs::write(&path, r#"{"hotkey":"Ctrl+Banana"}"#).unwrap();
+        assert_eq!(hotkey_choice(&path), HOTKEYS[0]);
+        for k in HOTKEYS {
+            assert!(Shortcut::from_str(k).is_ok(), "{k} is not a usable accelerator");
+        }
 
         std::fs::remove_file(&path).ok();
     }
