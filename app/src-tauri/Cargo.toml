@@ -38,3 +38,12 @@ cpal = "0.18.2"
 ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
 serde_json = "1"
+
+# Linux only, and for exactly one call. `set_focusable(false)` maps to GTK's
+# `accept_focus`, which stops the pill taking *keyboard* focus but does not stop
+# KWin making it the *active window* — and that is what dims the window behind
+# it and stops its caret. The cure is the X11 window type hint, which tao does
+# not expose, so `no_activate` reaches through `gtk_window()` for it. Pinned to
+# the version Tauri already builds, or the types are not the same types.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"

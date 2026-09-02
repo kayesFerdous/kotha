@@ -484,6 +484,7 @@ fn main() {
             // steals focus takes the caret with it and the feature collapses.
             pill.set_focusable(false)?;
             pill.set_size(LogicalSize::new(PILL_WINDOW.0, PILL_WINDOW.1))?;
+            no_activate(&pill);
 
             // NOTE: click-through is deliberately NOT set here. See the call
             // in `toggle`, and the bug note above it.
@@ -755,10 +756,16 @@ fn dictate(
         // is still talking — which is the whole reason for segmenting at all
         // at 1.5x realtime.
         for utterance in intake.feed(&block, &mut segmenter)? {
-            n += 1;
-            deliver(app, engine, corrector, out, n, &utterance)?;
+            // Only a chunk that survived the engine's silence gate counts as
+            // speech. Resetting the idle timer on a discarded one is what kept
+            // the pill alive forever: the VAD opens on a breath, the engine
+            // throws the decode away, and the timer restarts anyway — so the
+            // dictation could never end on its own once it had started.
+            if deliver(app, engine, corrector, out, n + 1, &utterance)? {
+                n += 1;
+                last_voice = std::time::Instant::now();
+            }
             let _ = app.emit("kotha://state", "listening");
-            last_voice = std::time::Instant::now();
         }
 
         if segmenter.is_speaking() {
@@ -772,8 +779,9 @@ fn dictate(
     // gets transcribed rather than thrown away.
     drop(stream);
     if let Some(tail) = segmenter.flush() {
-        n += 1;
-        deliver(app, engine, corrector, out, n, &tail)?;
+        if deliver(app, engine, corrector, out, n + 1, &tail)? {
+            n += 1;
+        }
     }
 
     app.state::<Session>().listening.store(false, Ordering::SeqCst);
@@ -785,6 +793,11 @@ fn dictate(
 
 /// Transcribe one utterance, repair its English, and put it where the user
 /// asked for it.
+/// Returns whether anything was actually said.
+///
+/// `false` means the engine's silence gate threw the chunk away, and the
+/// caller must treat that as silence — not as a reason to keep listening. See
+/// the loop in `dictate`.
 fn deliver(
     app: &AppHandle,
     engine: &Engine,
@@ -792,7 +805,7 @@ fn deliver(
     out: &mut Output,
     n: usize,
     utterance: &[f32],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let secs = utterance.len() as f64 / kotha_spike::SAMPLE_RATE as f64;
     let _ = app.emit("kotha://state", "thinking");
 
@@ -802,6 +815,10 @@ fn deliver(
     let text = text.trim();
 
     println!("[{n}] {secs:.1}s audio → {took:.1}s decode ({:.2}x realtime)", secs / took);
+    if text.is_empty() {
+        println!("    (nothing said)\n");
+        return Ok(false);
+    }
     println!("    {text}");
     if let Some(w) = suspicious_fusion(text) {
         eprintln!("    ⚠ {w} — check suppress_tokens");
@@ -813,8 +830,43 @@ fn deliver(
     }
     out.deliver(&fixed);
     println!();
-    Ok(())
+    Ok(true)
 }
+
+/// Tell the window manager this window is furniture, not an application.
+///
+/// `set_focusable(false)` is not enough on X11. It maps to GTK's `accept_focus`,
+/// which stops the pill taking *keyboard* focus — and `is_focused()` duly
+/// reports `false`. But KWin still makes it the **active window**, which is a
+/// different thing, and the consequences are the ones the user actually sees:
+/// the window behind it stops drawing its caret, and if the "Dim Inactive"
+/// desktop effect is on, that window visibly darkens. Measured 2026-09-02 with
+/// `xdotool getactivewindow`: the active window became `Kotha` for ~1.8 s every
+/// time the pill appeared.
+///
+/// The fix is the X11 window type hint. `Notification` is what this window
+/// actually is — transient, informational, never interacted with — and no
+/// window manager promotes a notification to active. `tao` does not expose type
+/// hints, so this reaches through Tauri's `gtk_window()`.
+///
+/// Must be called before the window is first shown: the hint is read when the
+/// window is mapped. The pill is created `visible: false`, so `setup()` is the
+/// right place.
+///
+/// Not fatal if it fails. Without it the pill still works; it just steals the
+/// active-window title on the way past.
+#[cfg(target_os = "linux")]
+fn no_activate(w: &WebviewWindow) {
+    use gtk::prelude::GtkWindowExt;
+    match w.gtk_window() {
+        Ok(g) => g.set_type_hint(gtk::gdk::WindowTypeHint::Notification),
+        Err(e) => eprintln!("window  could not set the type hint ({e}); \
+                             the pill may dim the window behind it"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn no_activate(_: &WebviewWindow) {}
 
 /// Put the pill on screen, wherever the user's screen currently is.
 ///
