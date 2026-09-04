@@ -22,7 +22,9 @@ import numpy as np
 
 SR, N_FFT, HOP, N_MELS, N_FRAMES = 16000, 400, 160, 80, 3000
 N_SAMPLES = N_FRAMES * HOP
-SPIKE = Path(__file__).parent / "target/release/kotha-spike"
+# The workspace shares one target directory at the repo root, so
+# CTranslate2 is compiled once rather than once per crate.
+SPIKE = Path(__file__).parent.parent / "target/release/kotha-spike"
 MODEL = Path(__file__).parent.parent / "models/whisper-medium-bn-en-cs-faster"
 
 

@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  Kotha — the first-run window.
+
+  The pill's sibling, and its opposite: an ordinary window that takes focus,
+  because it has a button on it. It exists for one reason — Kotha needs a
+  778 MB model and that should never leave without being asked for.
+
+  Like index.html it opens in a plain browser and works: setup.js fakes the
+  download when there is no Tauri around it. Its styles live in the same
+  pill.css, under `body.setup`, so the two windows cannot drift apart on
+  colour.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Welcome to Kotha</title>
+  <link rel="stylesheet" href="pill.css">
+</head>
+<body class="setup" data-phase="offer">
+
+  <div data-phase="offer">
+    <h1>One download to go</h1>
+    <p>
+      Kotha listens and writes on your own machine — nothing you say leaves it.
+      To do that it needs its speech model, which is <strong>778 MB</strong> and
+      only downloads once.
+    </p>
+    <button id="go">Download the model</button>
+  </div>
+
+  <div data-phase="downloading">
+    <h1>Downloading</h1>
+    <div class="meter"></div>
+    <p class="note" id="progress">Starting…</p>
+    <p class="note">
+      You can leave this running. If the connection drops it picks up where it
+      stopped.
+    </p>
+  </div>
+
+  <div data-phase="ready">
+    <h1>Ready</h1>
+    <!-- Written by setup.js, because only Rust knows which key is bound —
+         and whether one is bound at all. -->
+    <p id="how">Press the hotkey anywhere and say something.</p>
+    <p class="note">Kotha stays in the tray. You can close this window.</p>
+  </div>
+
+  <script src="setup.js"></script>
+</body>
+</html>

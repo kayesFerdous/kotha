@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kotha",
+  "version": "0.1.0",
+  "identifier": "app.kotha",
+
+  "build": {
+    "frontendDist": "../ui"
+  },
+
+  "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": null },
+
+    "windows": [
+      {
+        "label": "pill",
+        "title": "Kotha",
+        "url": "index.html",
+
+        "resizable": false,
+
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+
+        "visible": false,
+        "focus": false,
+        "acceptFirstMouse": false
+      },
+      {
+        "label": "setup",
+        "title": "Welcome to Kotha",
+        "url": "setup.html",
+
+        "width": 460,
+        "height": 280,
+        "resizable": false,
+        "center": true,
+
+        "visible": false
+      }
+    ]
+  },
+
+  "bundle": {
+    "active": true,
+    "targets": "all",
+
+    "category": "Utility",
+    "publisher": "Kayes Ferdous",
+    "shortDescription": "Offline Bengali-English dictation",
+    "longDescription": "Press a hotkey anywhere, talk, and the text lands at your cursor. Kotha transcribes Bangla speech with the English words written in Latin script, the way Bangladeshis actually write them. It runs entirely on your own machine: after the one-time model download nothing you say leaves the computer.",
+
+    "linux": {
+      "deb": {
+        "depends": ["libgomp1"]
+      }
+    },
+
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ]
+  }
+}

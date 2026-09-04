@@ -1,0 +1,111 @@
+# Kotha — the four bundles.
+#
+# Run it by hand (Actions → Release → Run workflow) to find out whether a
+# platform still builds; push a `v*` tag to cut an actual release. The
+# difference is one `if`: without a tag there is no release, only artifacts.
+#
+# Nothing here is fast. ct2rs compiles CTranslate2 from source — 15-30 minutes
+# cold — so the cargo cache is the whole reason this is bearable, and a cache
+# miss on all four legs is close to an hour of runner time.
+
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write        # needed only by the tag path, to create the release
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false   # one platform breaking should not hide the other three
+      matrix:
+        include:
+          # ubuntu-22.04, NOT the newest runner. An AppImage inherits its glibc
+          # floor from the machine that builds it: built on Arch this binary
+          # demands GLIBC_2.39 and will not start on Ubuntu 22.04, from a format
+          # whose whole promise is running anywhere. 22.04 is glibc 2.35.
+          #
+          # The same old base is why NO_STRIP is absent here. linuxdeploy ships
+          # its own strip, too old for the .relr.dyn sections current Arch
+          # libraries carry; on 22.04 it works, and skipping it costs ~30 MB.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          # macos-13 was the old Intel label and is gone; macos-14 is
+          # deprecated. These two are the current pair.
+          - os: macos-15-intel   # Intel
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - os: macos-15         # Apple Silicon
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: msi
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Tauri's own prerequisites, plus three of ours: cmake builds
+      # CTranslate2, libasound2 is what cpal opens the microphone through, and
+      # libxkbcommon is enigo's one unconditional C dependency on Linux.
+      - name: Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            build-essential file patchelf libssl-dev libxdo-dev \
+            cmake libasound2-dev libxkbcommon-dev
+
+      # CTranslate2 wants OpenMP and Apple's clang does not ship it.
+      - name: macOS dependencies
+        if: startsWith(matrix.os, 'macos')
+        run: brew install libomp
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The expensive thing to cache is not our crates, it is the CTranslate2
+      # object tree under target/*/build/ct2rs-*/out.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: tauri-apps/tauri-action@v0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app/src-tauri
+          # Empty on a manual run, which is what stops tauri-action creating a
+          # release; the artifacts below are then the only output.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && 'v__VERSION__' || '' }}
+          releaseName: Kotha v__VERSION__
+          releaseDraft: true
+          # One invocation per platform, every bundle in it. Running the bundler
+          # twice against an already-patched binary logs "__TAURI_BUNDLE_TYPE
+          # variable not found" and leaves the updater unable to tell how the
+          # app was installed.
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kotha-${{ matrix.target }}
+          # Not tauri-action's own artifactPaths output: it is a JSON array,
+          # and upload-artifact wants newline-separated globs. Three of these
+          # four patterns match nothing on any given runner, which is fine.
+          path: |
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/msi/*.msi
+          if-no-files-found: warn

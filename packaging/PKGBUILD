@@ -1,0 +1,61 @@
+# Maintainer: Kayes Ferdous <kayesfardows@gmail.com>
+#
+# This is the AUR recipe for the ready-built Kotha. It downloads the .deb from
+# the GitHub release and unpacks it — Arch and Debian want the same files in the
+# same places, so there is no second artifact to build and no second thing to
+# get wrong.
+#
+# There is no `kotha` source package on purpose. Building from source compiles
+# CTranslate2 and oneDNN, which is 15-30 minutes on a fast desktop, and nobody
+# installing a dictation app wants to wait for that.
+#
+# To publish or update, see PLAN.md, "Getting it into the AUR".
+
+pkgname=kotha-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Offline Bengali-English dictation: press a hotkey, talk, and the text lands at your cursor"
+arch=('x86_64')
+url="https://github.com/kayesFerdous/kotha"
+license=('MIT')
+provides=('kotha')
+conflicts=('kotha')
+
+# makepkg strips binaries by default, and that is wrong here. Stripping takes
+# Kotha from 99 MB to 81 MB but only ~1 MB off the download, because a symbol
+# table compresses well — and it costs every crash report its function names,
+# which is how this app gets debugged (PLAN.md, "The first bundle"). `!debug`
+# then stops makepkg building an empty -debug package out of what it removed.
+options=('!strip' '!debug')
+
+# Everything the binary opens. CTranslate2 is compiled into the executable, so
+# the only maths library from outside is OpenMP, which lives in gcc-libs.
+depends=(
+  'webkit2gtk-4.1'
+  'gtk3'
+  'libayatana-appindicator'   # the tray icon, opened at run time not link time
+  'alsa-lib'                  # the microphone
+  'libxkbcommon'
+  'gcc-libs'                  # libgomp
+  'hicolor-icon-theme'
+)
+
+# Kotha works without these — it copies to the clipboard and you press paste.
+# With them, "Paste at the cursor" in the tray menu can put the text straight
+# into the window you are looking at.
+optdepends=(
+  'xdg-desktop-portal: paste straight into the focused window'
+  'xdg-desktop-portal-kde: the KDE half of the above'
+  'xdg-desktop-portal-gnome: the GNOME half of the above'
+)
+
+# The model is not in here. Kotha downloads its 778 MB on first run, into
+# ~/.local/share/app.kotha/, and asks before it starts.
+source=("$url/releases/download/v$pkgver/Kotha_${pkgver}_amd64.deb")
+sha256sums=('SKIP')   # replaced by `updpkgsums` — see PLAN.md
+
+package() {
+  # makepkg's bsdtar already split the .deb into its three members; the files
+  # are in data.tar.gz, laid out exactly as they should land on disk.
+  tar -xf "$srcdir/data.tar.gz" -C "$pkgdir"
+}

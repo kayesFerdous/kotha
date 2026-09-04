@@ -25,7 +25,17 @@ earshot = "1.2.2"
 num_cpus = "1.17.0"
 rubato = { version = "5.0.0", default-features = false, features = ["fft_resampler"] }
 arboard = { version = "3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
-enigo = { version = "0.6.1", features = ["libei_smol", "wayland"] }
+# Not the crates.io release. 0.6.1 throws away the portal's restore token —
+# it is a `None` with a TODO next to it in `linux/libei.rs` — so KDE asks
+# "allow remote control?" on every single launch. Upstream has since added
+# `Settings::restore_token` in and `Enigo::restore_token()` out, which is
+# exactly the round trip that makes the dialog a once-ever thing. Pinned to a
+# commit, not a branch: a package built from the AUR must build the same code
+# tomorrow as today.
+#
+# `libei_smol` split into `libei` + `smol` upstream. `platform_specific` is what
+# exposes `restore_token()`.
+enigo = { git = "https://github.com/enigo-rs/enigo", rev = "a88d9b7", features = ["libei", "smol", "wayland", "platform_specific"] }
 
 # The int8 GEMM backend is target-specific, and getting it wrong costs ~2x.
 #
@@ -40,5 +50,5 @@ ct2rs = { version = "0.9", features = ["whisper", "dnnl"] }
 [target.'cfg(not(target_arch = "x86_64"))'.dependencies]
 ct2rs = { version = "0.9", features = ["whisper"] }
 
-[profile.release]
-opt-level = 3
+# [profile.release] now lives in the workspace root Cargo.toml — cargo only
+# honours profiles there, and keeping a copy here is a warning, not an override.

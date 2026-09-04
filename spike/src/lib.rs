@@ -9,6 +9,9 @@
 //! Nothing here changed in the move. `KOTHA_DUMP_MEL=... check_mel.py` is the
 //! proof of that and must be re-run after any edit to this file.
 
+pub mod correct;
+pub mod live;
+
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -22,6 +25,46 @@ use rustfft::{Fft, FftPlanner};
 
 /// Whisper's fixed input rate. Audio arrives here already resampled.
 pub const SAMPLE_RATE: u32 = 16_000;
+
+/// Below this average log-probability, a decode is thrown away as a
+/// hallucination rather than typed at the user.
+///
+/// **Whisper does not answer silence with silence.** Given breath, a fan or a
+/// keyboard it returns a fluent sentence it learnt — confidently, and different
+/// every time, so the repetition collapser never sees it.
+///
+/// The usual filter for this is faster-whisper's `no_speech_prob > 0.6`. **It
+/// does not work on this model.** Measured 2026-09-02: `no_speech_prob` came
+/// back between 0.0000 and 0.0003 on eight synthetic noise files including
+/// digital silence — the fine-tune never learnt to emit `<|nospeech|>`, because
+/// its training data is all speech. The token is there and its calibration is
+/// gone.
+///
+/// The average log-probability does separate them, cleanly:
+///
+/// | | n | worst | median | best |
+/// |---|---|---|---|---|
+/// | real speech | 40 | **-0.142** | -0.040 | -0.008 |
+/// | noise | 8 | -1.047 | -0.35 | **-0.198** |
+///
+/// The real speech is 40 random clips from the *training* corpus, deliberately
+/// not the paper's 393 — a threshold fitted to the evaluation set would be
+/// tuning on it. The noise is synthetic: hiss at three levels, 50 and 60 Hz
+/// hum, clicks, a breath-like envelope, and digital silence.
+///
+/// **-0.20** sits in the gap, biased towards keeping speech: it leaves 0.06 of
+/// margin below the worst real utterance and still rejects seven of the eight
+/// noise files. That is a small sample and real rooms are not synthetic noise,
+/// so it is a **calibration knob, not a constant** — `KOTHA_MIN_LOGPROB`
+/// overrides it, and `KOTHA_MIN_LOGPROB=-99` turns the gate off entirely.
+const LOGPROB_FLOOR: f32 = -0.20;
+
+fn logprob_floor() -> f32 {
+    std::env::var("KOTHA_MIN_LOGPROB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(LOGPROB_FLOOR)
+}
 
 // Whisper's feature geometry. These match the model's preprocessor_config.json
 // and are fixed for every Whisper checkpoint, so they are constants rather than
@@ -90,6 +133,12 @@ impl Engine {
             options: WhisperOptions {
                 beam_size: 1,
                 suppress_tokens: vec![],
+                // Off by default, and the whole silence gate below depends on
+                // it. See `NO_SPEECH`.
+                // The gate below is built on `scores`. `no_speech_prob` is
+                // deliberately not requested: it is ~0 on this model even for
+                // digital silence. See `LOGPROB_FLOOR`.
+                return_scores: true,
                 ..Default::default()
             },
         })
@@ -140,13 +189,36 @@ impl Engine {
             ];
 
             let res = self.whisper.generate(&view, &[prompt], &self.options)?;
-            let seq = res
+            let r = res.into_iter().next().ok_or_else(|| anyhow!("model returned no result"))?;
+
+            // How sure the model is, averaged over the tokens it produced.
+            // Printed every time, not only on a rejection: tuning the floor
+            // needs to see what the accepted decodes score too.
+            let logprob = r.scores.first().copied().unwrap_or(0.0);
+            let floor = logprob_floor();
+            println!("    confidence {logprob:.3}");
+            if logprob < floor {
+                println!("    ↳ discarded as noise (floor {floor:.2}) — nothing was typed");
+                continue;
+            }
+
+            let seq = r
+                .sequences
                 .into_iter()
                 .next()
-                .and_then(|r| r.sequences.into_iter().next())
                 .ok_or_else(|| anyhow!("model returned no sequence"))?;
 
-            out.push(self.tokenizer.decode(seq)?);
+            // Repair a stuck decode here rather than in each front end: the
+            // CLI and the app both go through this call, and a defect fixed in
+            // one of them only is a defect that comes back. The raw text is
+            // logged when it fires, because a loop is a decode bug and the
+            // collapsed text is no longer evidence of one.
+            let text = self.tokenizer.decode(seq)?;
+            let collapsed = collapse_loops(&text);
+            if collapsed != text {
+                eprintln!("    \u{26a0} repetition loop collapsed, raw was: {text:?}");
+            }
+            out.push(collapsed);
         }
 
         Ok(out.join(" "))
@@ -303,4 +375,90 @@ pub fn suspicious_fusion(text: &str) -> Option<String> {
     (worst.len() > 20).then(|| {
         format!("suspiciously long Latin run ({} chars): {worst:?}", worst.len())
     })
+}
+
+/// Collapse a decode that got stuck repeating itself.
+///
+/// Whisper loops on roughly a quarter of live utterances — `তোমার কথা কথা কথা
+/// কথা … ধরো ভালো আছে।` — and it is the app's worst defect. Phase 2's proposed
+/// detector (watch the decode clock) is dead: the observed loops decoded at
+/// 1.0x real time, indistinguishable from a healthy one. The text gives it away
+/// and nothing else does.
+///
+/// This repairs the symptom, not the cause. The cause needs a
+/// `repetition_penalty` sweep on the paper's 393-utterance set with the strict
+/// English-F1 and CER harness, which is not something to guess at — and
+/// `no_repeat_ngram_size` is probably the wrong knob for Bengali, where
+/// reduplication is grammatical (`করতে করতে` is correct at n=2).
+///
+/// Which is also why the thresholds are what they are. A run of two is ordinary
+/// Bengali; three is ordinary *speech* (`না না না`). Four in a row is not
+/// something a person says, so `MIN_RUN` is 4 and the run collapses to a single
+/// copy — for a real loop the true count is one, and leaving two behind would
+/// be inventing a word the speaker did not say. Phrases loop as readily as
+/// single words, so a repeat unit is up to `MAX_PHRASE` tokens; the shortest
+/// unit is tried first, so `কথা কথা কথা কথা` is one word four times and not one
+/// pair twice.
+///
+/// ponytail: symptom repair. Delete this once a decode-side penalty is measured.
+const MIN_RUN: usize = 4;
+const MAX_PHRASE: usize = 4;
+
+pub fn collapse_loops(text: &str) -> String {
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(toks.len());
+    let mut i = 0;
+
+    while i < toks.len() {
+        let run = (1..=MAX_PHRASE.min(toks.len() - i)).find_map(|n| {
+            let mut reps = 1;
+            while i + n * (reps + 1) <= toks.len()
+                && toks[i..i + n] == toks[i + n * reps..i + n * (reps + 1)]
+            {
+                reps += 1;
+            }
+            (reps >= MIN_RUN).then_some((n, reps))
+        });
+
+        match run {
+            Some((n, reps)) => {
+                out.extend_from_slice(&toks[i..i + n]);
+                i += n * reps;
+            }
+            None => {
+                out.push(toks[i]);
+                i += 1;
+            }
+        }
+    }
+
+    out.join(" ")
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::collapse_loops;
+
+    #[test]
+    fn collapses_a_stuck_word_but_leaves_reduplication_alone() {
+        // The real thing, from the first live dictation.
+        assert_eq!(
+            collapse_loops("তোমার কথা কথা কথা কথা কথা কথা ধরো ভালো আছে।"),
+            "তোমার কথা ধরো ভালো আছে।"
+        );
+        // Grammatical reduplication, and emphatic speech, must survive.
+        assert_eq!(collapse_loops("ধীরে ধীরে করতে করতে"), "ধীরে ধীরে করতে করতে");
+        assert_eq!(collapse_loops("না না না ভাই"), "না না না ভাই");
+    }
+
+    #[test]
+    fn collapses_a_stuck_phrase_and_keeps_the_tail() {
+        assert_eq!(
+            collapse_loops("ami ভালো আছি ভালো আছি ভালো আছি ভালো আছি thanks"),
+            "ami ভালো আছি thanks"
+        );
+        // Nothing to do is a no-op, including on nothing at all.
+        assert_eq!(collapse_loops("hello world"), "hello world");
+        assert_eq!(collapse_loops(""), "");
+    }
 }
