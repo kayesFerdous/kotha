@@ -21,6 +21,13 @@ license=('MIT')
 provides=('kotha')
 conflicts=('kotha')
 
+# makepkg strips binaries by default, and that is wrong here. Stripping takes
+# Kotha from 99 MB to 81 MB but only ~1 MB off the download, because a symbol
+# table compresses well — and it costs every crash report its function names,
+# which is how this app gets debugged (PLAN.md, "The first bundle"). `!debug`
+# then stops makepkg building an empty -debug package out of what it removed.
+options=('!strip' '!debug')
+
 # Everything the binary opens. CTranslate2 is compiled into the executable, so
 # the only maths library from outside is OpenMP, which lives in gcc-libs.
 depends=(

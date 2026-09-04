@@ -9,6 +9,7 @@ publish = false
 # stays the plain name, which is the right shape for Windows' MSI manufacturer
 # and macOS, where an address in that field would look odd.
 authors = ["Kayes Ferdous <kayesfardows@gmail.com>"]
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
