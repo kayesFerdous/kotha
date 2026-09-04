@@ -10,7 +10,7 @@ WHAT IT WILL AND WILL NOT TOUCH
 -------------------------------
 Only tokens that bnasr_eval.script_of() calls "latin". Bengali output is
 unmodifiable by construction, which is what makes it safe to correct English
-aggressively (CLAUDE.md §5).
+aggressively.
 
 Correct-or-abstain, never guess. A confidently wrong real word is worse than a
 visible misspelling: the user can fix what they can see.
@@ -44,12 +44,12 @@ WHAT THE CALIBRATED FLOOR GIVES UP
 calibrate() put the floor at 2.5, and "grammer" sits at zipf 2.9. So this
 corrector does NOT fix grammer -> grammar. That is a deliberate concession,
 not an oversight: at floor 3.0 the corrector starts rewriting real words
-(unhappiness -> happiness, slab -> lab), and by CLAUDE.md §5 a confidently
+(unhappiness -> happiness, slab -> lab), and a confidently
 wrong real word is worse than a visible misspelling.
 
 Unigram frequency cannot separate "grammer" (a misspelling at 2.9) from
 "neutrally" (a real word at ~3.0). Nothing at this floor can. That separation
-needs the surrounding words, which is the bigram context in PLAN.md Phase 7 --
+needs the surrounding words -- bigram context, still unbuilt --
 and this is the measurement that says when to build it.
 
 "mill" (4.38) is protected twice over: by the floor, and by having no margin
@@ -58,7 +58,7 @@ wrong.
 
 DICTIONARY
 ----------
-wordfreq's top 50k English (the OpenSubtitles-blend register PLAN.md asked for,
+wordfreq's top 50k English (the OpenSubtitles-blend register we wanted,
 already installed, no download) plus the English side of the TRAINING corpus,
 which supplies the domain words a general list lacks: biryani, shawarma, vlog.
 

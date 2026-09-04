@@ -94,7 +94,7 @@ const HF_REPO: &str = "kayees/whisper-medium-bn-en-cs-faster";
 
 /// Every file `ct2rs::Whisper::new()` wants. Do not prune this list — it loads
 /// the published directory as-is, which is the whole reason this app runs the
-/// exact int8 weights that were benchmarked (CLAUDE.md §3).
+/// exact int8 weights that were benchmarked.
 const MODEL_FILES: [&str; 5] = [
     "model.bin",
     "tokenizer.json",
@@ -430,7 +430,7 @@ const POLL: Duration = Duration::from_millis(200);
 
 /// Stop dictating after this much silence.
 ///
-/// PLAN.md's description of the app has always said "press again, or stay
+/// Kotha has always been described as "press again, or stay
 /// silent for two seconds, and it fades out". The first build only had the
 /// first half, which meant that if the hotkey was missed — and on Wayland it
 /// can be — there was no way to end a dictation at all.
@@ -956,7 +956,7 @@ fn settings_path(app: &AppHandle) -> PathBuf {
 /// `KOTHA_PASTE`, if it is set, as a mode id.
 ///
 /// It still wins over the setting: it is the documented way to test the three
-/// routes, and every note in PLAN.md Phase 3 is written in terms of it. When it
+/// routes, and the notes on text output are written in terms of it. When it
 /// is set the menu shows what it forced and refuses to be clicked, rather than
 /// offering a choice that would not take effect.
 fn paste_env() -> Option<&'static str> {
@@ -1012,7 +1012,7 @@ fn paste_choice(path: &Path) -> String {
 /// **F9 is the default, and `Ctrl+Alt+Space` is not, for two measured reasons.**
 /// That chord is fcitx's and ibus's input-method switch, so on a Bangladeshi
 /// desktop it is very likely already bound to Avro. And on Wayland the key
-/// reaches the focused application as well as us (PLAN.md, Phase 4 finding 5),
+/// reaches the focused application as well as us — measured on KDE Wayland —
 /// where `Ctrl+Alt+Space` inserts a stray `^[^@` into whatever you were about to
 /// dictate into. F9 is delivered twice as well, but inserts nothing — so the
 /// defect is invisible on it. That is a dodge, not a fix; the portal route is
@@ -1048,7 +1048,7 @@ fn hotkey_choice(path: &Path) -> String {
 /// on every open, not just the first.
 ///
 /// It lives in `settings.json` next to `hotkey` and `paste`, because settings
-/// are one file (CLAUDE.md §8). It is not a secret: it identifies a grant this
+/// are one file. It is not a secret: it identifies a grant this
 /// user already made to this app, and it is worthless to anyone else.
 fn open_output(app: &AppHandle, mode: &str) -> Output {
     let path = settings_path(app);

@@ -4,7 +4,7 @@
 //! English-F1 (71.81 → 77.02) on the held-out 393 with zero non-Latin tokens
 //! modified. The rules are not re-derived here and must not be re-tuned here —
 //! the thresholds came from `correct.py --calibrate` on the *training* split,
-//! and PLAN.md holds the reasoning. This file is a translation.
+//! and the reasoning is recorded alongside them. This file is a translation.
 //!
 //! Parity with the prototype is checked, not assumed:
 //!
@@ -79,7 +79,7 @@ fn ed_budget(n: usize) -> usize {
 ///
 /// `bnasr_eval.script_of() == "latin"`: contains an ASCII letter and no
 /// Bengali codepoint. Mixed-script tokens are *not* latin, so they are left
-/// alone too. This is the non-negotiable from CLAUDE.md §5 — Bengali output is
+/// alone too. This is the non-negotiable — Bengali output is
 /// unmodifiable by construction, and that is what makes it safe to correct
 /// English aggressively.
 pub fn is_latin(token: &str) -> bool {
@@ -303,7 +303,7 @@ mod tests {
     /// The prototype's selftest, on the real baked dictionary.
     ///
     /// These are the guarantees, not a sample of behaviour. Each one is a
-    /// decision PLAN.md records the reasoning for; a failure here means the
+    /// decision with reasoning recorded behind it; a failure here means the
     /// port has drifted from what was measured.
     #[test]
     fn guarantees() {
@@ -343,7 +343,7 @@ mod tests {
 
         // The ceiling: beyond ED 2 it abstains rather than reaching for
         // something wrong. `ambacerer` → `ambassador` is edit distance 5, and
-        // is the case PLAN.md used to argue Double Metaphone's loose net was
+        // is the case that argued Double Metaphone's loose net was
         // not worth its damage.
         assert_eq!(c.correct_token("ambacerer"), "ambacerer");
 

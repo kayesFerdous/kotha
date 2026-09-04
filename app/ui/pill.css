@@ -17,8 +17,8 @@
      done       text delivered. A tick, then it leaves.
 
    Transitions between states are CSS, not JavaScript. pill.js only ever sets
-   the attribute; it never animates anything. PLAN.md Phase 4 calls this
-   "four states, CSS only" and it is worth keeping that way: an agent can
+   the attribute; it never animates anything. Four states, CSS only — and it
+   is worth keeping that way: an agent can
    restyle every transition here without reading a line of JS.
 
    The pill is dark in every OS theme, deliberately. It floats over whatever

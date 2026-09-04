@@ -27,7 +27,7 @@
 //!
 //! WHAT IS DELIBERATELY MISSING
 //! ---------------------------
-//! **The hotkey.** PLAN.md lists it in this phase, but the acceptance test is
+//! **The hotkey.** It belongs to this phase on paper, but the acceptance test is
 //! "a terminal app prints what you said, twice in a row, with no model reload",
 //! and a global hotkey is not what that gates. It also arrives for free in
 //! Phase 4: the app shell is Tauri, so the hotkey is
@@ -225,7 +225,7 @@ fn emit(
 ///
 /// A paste and not per-character typing, because Bengali conjuncts and
 /// combining marks break character-by-character injection in many applications
-/// (CLAUDE.md §3). A paste is atomic.
+/// A paste is atomic.
 pub struct Output {
     clipboard: Option<arboard::Clipboard>,
     keyboard: Option<Enigo>,
@@ -544,11 +544,11 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
 /// Physical cores, not logical: on the Ryzen 5600G 6 beat 12, so SMT actively
 /// hurt. The M2 is 4 performance + 4 efficiency cores with no SMT at all, so
 /// 8 may well lose to 4 there for a different reason — measure before
-/// assuming (CLAUDE.md §4).
+/// assuming.
 ///
 /// Shared by the CLI and the app deliberately. A decode running at a different
 /// thread count depending on which front end started it would make every
-/// timing in PLAN.md ambiguous.
+/// recorded timing ambiguous.
 pub fn decode_threads() -> usize {
     std::env::var("KOTHA_THREADS")
         .ok()

@@ -70,7 +70,7 @@ CATS = [
 ]
 # The corrector's target is latin_near. latin_far is arguably also its target
 # but the model may simply have misheard. bangla* is the model's problem, not
-# the corrector's -- and by CLAUDE.md §5 the corrector may not touch those.
+# the corrector's -- and the corrector may not touch those.
 CORRECTABLE = {"latin_near"}
 
 
@@ -217,7 +217,7 @@ def main():
         for u, h in hyps.items():
             toks = B.tokenize(B.normalize_text(h))
             out = [corr.correct_token(x) for x in toks]
-            # CLAUDE.md §5: Bengali must be unmodifiable by construction.
+            # Bengali must be unmodifiable by construction.
             # Verified here rather than trusted.
             n_touched_non_latin += sum(
                 1 for a, b in zip(toks, out)

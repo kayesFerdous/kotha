@@ -117,7 +117,7 @@ impl Engine {
             whisper,
             tokenizer,
             mels: MelExtractor::new(),
-            // These two settings are not negotiable; see CLAUDE.md §5.
+            // These two settings are not negotiable.
             //
             // `suppress_tokens: vec![]` — under this model's Bengali BPE, token
             // 220 is the space. faster-whisper's Python layer computes a
