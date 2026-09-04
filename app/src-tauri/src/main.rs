@@ -632,7 +632,7 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
 
     let corrector = Corrector::new();
     let mut mode = paste_setting(&app);
-    let mut out = Output::open(paste_flags(&mode));
+    let mut out = open_output(&app, &mode);
     let mut engine: Option<Engine> = None;
 
     while let Ok(cmd) = rx.recv() {
@@ -664,7 +664,7 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
         let chosen = paste_setting(&app);
         if chosen != mode {
             mode = chosen;
-            out = Output::open(paste_flags(&mode));
+            out = open_output(&app, &mode);
         }
 
         if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
@@ -1037,6 +1037,26 @@ fn hotkey_choice(path: &Path) -> String {
     setting(path, "hotkey")
         .filter(|h| Shortcut::from_str(h).is_ok())
         .unwrap_or_else(|| HOTKEYS[0].to_string())
+}
+
+/// Open the text output, carrying the portal's permission across restarts.
+///
+/// On the portal route the desktop shows an "allow remote control?" dialog the
+/// first time. Saying yes hands back a token; giving that token back on the
+/// next launch restores the same grant with no dialog at all. The token is
+/// single-use — the portal issues a new one each time — so it is written back
+/// on every open, not just the first.
+///
+/// It lives in `settings.json` next to `hotkey` and `paste`, because settings
+/// are one file (CLAUDE.md §8). It is not a secret: it identifies a grant this
+/// user already made to this app, and it is worthless to anyone else.
+fn open_output(app: &AppHandle, mode: &str) -> Output {
+    let path = settings_path(app);
+    let out = Output::open(paste_flags(mode), setting(&path, "restore_token"));
+    if let Some(token) = out.restore_token.as_deref() {
+        save_setting(&path, "restore_token", token);
+    }
+    out
 }
 
 /// A mode id as `Output::open` wants it: (paste, portal).

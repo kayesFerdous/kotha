@@ -229,10 +229,20 @@ fn emit(
 pub struct Output {
     clipboard: Option<arboard::Clipboard>,
     keyboard: Option<Enigo>,
+
+    /// A fresh permission token from the desktop portal, if this connection
+    /// got one. Whoever owns the settings file should save it and hand it back
+    /// to the next `open`, which is what stops the desktop asking again.
+    ///
+    /// It changes every time it is used, so saving it once is not enough — the
+    /// old one is dead the moment a new one arrives.
+    pub restore_token: Option<String>,
 }
 
 impl Output {
-    pub fn open((paste, portal): (bool, bool)) -> Self {
+    /// `restore_token` is the one saved by a previous run, or `None` the first
+    /// time. It only means anything on the portal route.
+    pub fn open((paste, portal): (bool, bool), restore_token: Option<String>) -> Self {
         let clipboard = match arboard::Clipboard::new() {
             Ok(c) => Some(c),
             Err(e) => {
@@ -244,7 +254,7 @@ impl Output {
         };
 
         let mut how = "";
-        let keyboard = paste.then(|| connect_keyboard(portal)).and_then(|r| match r {
+        let keyboard = paste.then(|| connect_keyboard(portal, restore_token)).and_then(|r| match r {
             Ok((k, backend)) => {
                 how = backend;
                 Some(k)
@@ -265,7 +275,12 @@ impl Output {
             }
             (None, _) => println!("output  terminal only"),
         }
-        Self { clipboard, keyboard }
+        let restore_token = keyboard.as_ref().and_then(fresh_token);
+        if restore_token.is_some() {
+            println!("output  the desktop granted a lasting permission — saved, \
+                      so it should not ask again");
+        }
+        Self { clipboard, keyboard, restore_token }
     }
 
     pub fn deliver(&mut self, text: &str) {
@@ -381,16 +396,25 @@ impl Borrowed {
 ///   **x11** — XTEST. Reaches XWayland clients only; a native Wayland window
 ///   never sees it. This is what KDE falls back to.
 #[cfg(target_os = "linux")]
-fn connect_keyboard(portal: bool) -> Result<(Enigo, &'static str), enigo::NewConError> {
+fn connect_keyboard(
+    portal: bool,
+    restore_token: Option<String>,
+) -> Result<(Enigo, &'static str), enigo::NewConError> {
     // A display name no socket will ever have, used to veto a backend.
     let nowhere = || Some("kotha-no-such-display".to_string());
 
     if portal {
         // Veto both others so libei is the only connection that can open —
         // otherwise a machine where two succeed would paste twice.
+        //
+        // `restore_token` is the whole reason the dialog is not forever. The
+        // portal hands one back after the user says yes; give it back next
+        // launch and the portal restores the same grant silently. Without it
+        // every launch is a fresh ask, which is what 0.6.1 did.
         return Enigo::new(&Settings {
             x11_display: nowhere(),
             wayland_display: nowhere(),
+            restore_token,
             ..Default::default()
         })
         .map(|k| (k, "libei via the desktop portal — reaches every window"));
@@ -415,8 +439,22 @@ fn connect_keyboard(portal: bool) -> Result<(Enigo, &'static str), enigo::NewCon
     })
 }
 
+/// The portal's token, after a connection has been made. Rotates on every use.
+#[cfg(target_os = "linux")]
+fn fresh_token(k: &Enigo) -> Option<String> {
+    k.restore_token()
+}
+
 #[cfg(not(target_os = "linux"))]
-fn connect_keyboard(_portal: bool) -> Result<(Enigo, &'static str), enigo::NewConError> {
+fn fresh_token(_: &Enigo) -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn connect_keyboard(
+    _portal: bool,
+    _restore_token: Option<String>,
+) -> Result<(Enigo, &'static str), enigo::NewConError> {
     Enigo::new(&Settings::default()).map(|k| (k, "native"))
 }
 
@@ -436,7 +474,7 @@ fn run_file(model_dir: &Path, threads: usize, wav: &str) -> Result<()> {
 
     let engine = warm_up(model_dir, threads)?;
     let corrector = Corrector::new();
-    let mut out = Output::open(paste_mode());
+    let mut out = Output::open(paste_mode(), None);
     let mut intake = Intake::new(SAMPLE_RATE, 1)?;
     let mut segmenter = Segmenter::new();
     let mut n = 0;
@@ -466,7 +504,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
 
     let engine = warm_up(model_dir, threads)?;
     let corrector = Corrector::new();
-    let mut out = Output::open(paste_mode());
+    let mut out = Output::open(paste_mode(), None);
 
     let quit = Arc::new(AtomicBool::new(false));
     {
