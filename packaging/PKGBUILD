@@ -52,7 +52,7 @@ optdepends=(
 # The model is not in here. Kotha downloads its 778 MB on first run, into
 # ~/.local/share/app.kotha/, and asks before it starts.
 source=("$url/releases/download/v$pkgver/Kotha_${pkgver}_amd64.deb")
-sha256sums=('SKIP')   # replaced by `updpkgsums` — see PLAN.md
+sha256sums=('90b41b7ab524c5eccc053f30a6f134e815dea74b50f076017dda91d792dc9e47')
 
 package() {
   # makepkg's bsdtar already split the .deb into its three members; the files
