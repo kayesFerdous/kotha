@@ -125,9 +125,17 @@ $(( t_cores - p_cores )) efficiency core(s)"
   printf '\n  %-9s %-9s %-12s %s\n' threads RTF realtime "peak RSS"
   printf '  %-9s %-9s %-12s %s\n' ------- ------- -------- --------
 
-  local log rtf rss n
-  log=$(mktemp)
+  # The transcripts are kept, not thrown away. A sweep that reports RTF and
+  # deletes the text it decoded cannot answer the question that actually
+  # matters — whether the fast run was also a correct one — and the
+  # suppress_tokens fusion warning the gate prints would go with it. They land
+  # under the target directory, so the Accelerate comparison keeps its own set.
+  local logdir log rtf rss n
+  logdir="$target_dir/bench-logs"
+  mkdir -p "$logdir"
+
   for n in $counts; do
+    log="$logdir/threads-$n.log"
     # /usr/bin/time -l reports peak RSS in bytes on macOS; GNU time uses -v and
     # kilobytes, so this is read back defensively rather than assumed.
     KOTHA_THREADS="$n" /usr/bin/time -l \
@@ -141,7 +149,7 @@ $(( t_cores - p_cores )) efficiency core(s)"
       "$(awk -v r="${rtf:-0}" 'BEGIN{ if (r>0) printf "%.2fx", 1/r; else print "?" }')" \
       "$(awk -v b="${rss:-0}" 'BEGIN{ if (b>0) printf "%.2f GB", b/1073741824; else print "?" }')"
   done
-  rm -f "$log"
+  ok "transcripts kept in $logdir"
 
   say "Reading it"
   cat <<'EOF'
@@ -162,7 +170,8 @@ $(( t_cores - p_cores )) efficiency core(s)"
 
   Do not instead swap Accelerate in for ruy. Accelerate serves float32 only,
   so without ruy there is no int8 backend at all and the model silently
-  resolves to float32 — slower, three times the memory, and no warning.
+  resolves to float32. Measured on the Ryzen, that is 1.9x slower and 2.6x the
+  memory, with nothing printed to say so.
 
 EOF
 }
