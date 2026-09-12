@@ -981,6 +981,51 @@ fn no_activate(w: &WebviewWindow) {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn no_activate(_: &WebviewWindow) {}
 
+/// Bring the pill forward over whatever application is currently active.
+///
+/// `show()` is not enough on macOS, and this is the bug that hid the pill for
+/// the whole of the first build. tao's `set_visible(true)` reaches
+/// `orderFront:`, and **`orderFront:` orders within the calling application's
+/// own window list**. When Kotha is not the active app — which is always, since
+/// the entire point is that the user is typing into something else — that puts
+/// the pill behind the active app's windows. It was on screen, right size,
+/// right place, `is_visible()` answering `true`, and underneath whatever the
+/// user was looking at. Over an empty desktop it appeared perfectly, which is
+/// what made it look like a rendering fault for so long.
+///
+/// `orderFrontRegardless:` is AppKit's answer to exactly this case: order front
+/// even though the application is not active, without activating it. It is what
+/// HUD and overlay windows are meant to use.
+///
+/// The window level from `no_activate` is still required and does a different
+/// job. Level picks the *band* the window lives in — above full-screen apps,
+/// alongside the menu bar. This decides whether it is brought forward within
+/// that band at all. Neither substitutes for the other, which is why the level
+/// being right was not enough to make the pill visible.
+///
+/// Re-applied on every show rather than set once, because it is an action, not
+/// a property: there is nothing to stay set.
+///
+/// Safety: `NSWindow` is main-thread-only and the caller dispatches this
+/// through `run_on_main_thread`. The only unsafe step is trusting `ns_window()`
+/// for a window that exists, which it does, having just been shown.
+#[cfg(target_os = "macos")]
+fn raise_regardless(w: &WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+
+    let Ok(ptr) = w.ns_window() else {
+        eprintln!("window  no NSWindow to raise; the pill may stay behind the active app");
+        return;
+    };
+    let Some(win) = (unsafe { ptr.cast::<NSWindow>().as_ref() }) else {
+        eprintln!("window  NSWindow pointer was null; the pill may stay behind the active app");
+        return;
+    };
+
+    win.orderFrontRegardless();
+    println!("window  ordered front regardless (level {})", win.level());
+}
+
 /// Put the pill on screen, wherever the user's screen currently is.
 ///
 /// Placement is re-applied on every show: monitors come and go, and the pill
@@ -1003,10 +1048,26 @@ fn show(app: &AppHandle) {
     // worth reporting upstream: the code already has the Option in hand.
     let _ = w.set_ignore_cursor_events(true);
 
+    // `show()` alone leaves the pill behind the active application. See
+    // `raise_regardless`. Dispatched to the main thread because this runs on
+    // the worker, and `NSWindow` may only be touched from the main one.
+    #[cfg(target_os = "macos")]
+    {
+        let w2 = w.clone();
+        if let Err(e) = w.run_on_main_thread(move || raise_regardless(&w2)) {
+            eprintln!("window  could not reach the main thread to raise: {e}");
+        }
+    }
+
     // The property the whole feature rests on. Self-reported by the toolkit,
     // so it is evidence rather than proof, but a `true` here would be
     // conclusive the other way.
     println!("window  shown, focused = {:?}", w.is_focused());
+    println!(
+        "window  visible = {:?} | outer_position = {:?} | outer_size = {:?}",
+        w.is_visible(), w.outer_position(), w.outer_size()
+    );
+
 }
 
 /// Hide the pill once the UI has finished saying goodbye.
@@ -1045,10 +1106,15 @@ fn place(w: &WebviewWindow) -> tauri::Result<()> {
     let win_w = (PILL_WINDOW.0 * scale) as i32;
     let win_h = (PILL_WINDOW.1 * scale) as i32;
 
-    w.set_position(PhysicalPosition::new(
-        origin.x + (screen.width as i32 - win_w) / 2,
-        origin.y + screen.height as i32 - win_h - (bottom_margin() * scale) as i32,
-    ))
+    let x = origin.x + (screen.width as i32 - win_w) / 2;
+    let y = origin.y + screen.height as i32 - win_h - (bottom_margin() * scale) as i32;
+
+    println!(
+        "place   monitor {}x{} at ({},{}) scale {scale} | pill {win_w}x{win_h} -> ({x},{y})",
+        screen.width, screen.height, origin.x, origin.y
+    );
+
+    w.set_position(PhysicalPosition::new(x, y))
 }
 
 /// The three ways text can leave Kotha, as they appear in the tray menu.
