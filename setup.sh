@@ -108,9 +108,18 @@ $(( t_cores - p_cores )) efficiency core(s)"
   counts=$(printf '%s\n' 1 2 "$p_cores" $(( p_cores + 2 )) "$t_cores" |
            awk -v max="$t_cores" '$1 >= 1 && $1 <= max' | sort -n -u)
 
+  # Honour CARGO_TARGET_DIR, because the Accelerate comparison below depends on
+  # it: building into a second directory and then running the binary from the
+  # first would benchmark the old build and say nothing about it.
+  local target_dir bin
+  target_dir="${CARGO_TARGET_DIR:-$ROOT/target}"
+  [[ "$target_dir" = /* ]] || target_dir="$ROOT/$target_dir"
+  bin="$target_dir/release/kotha-spike"
+
   say "Building (CTranslate2 from source the first time — 15–30 minutes)"
   ( cd "$ROOT" && cargo build --release -p kotha-spike ) || die "build failed"
-  ok "built"
+  [[ -x "$bin" ]] || die "built, but no binary at $bin"
+  ok "built  $bin"
 
   say "Sweeping ${#wavs[@]} file(s) at: $(echo $counts | tr '\n' ' ')"
   printf '\n  %-9s %-9s %-12s %s\n' threads RTF realtime "peak RSS"
@@ -122,7 +131,7 @@ $(( t_cores - p_cores )) efficiency core(s)"
     # /usr/bin/time -l reports peak RSS in bytes on macOS; GNU time uses -v and
     # kilobytes, so this is read back defensively rather than assumed.
     KOTHA_THREADS="$n" /usr/bin/time -l \
-      "$ROOT/target/release/kotha-spike" "$MODEL_DIR" "${wavs[@]}" \
+      "$bin" "$MODEL_DIR" "${wavs[@]}" \
       >"$log" 2>&1 || { warn "$n threads: run failed — see $log"; continue; }
 
     rtf=$(grep -Eo '^RTF [0-9.]+' "$log" | awk '{print $2}')
