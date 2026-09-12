@@ -17,7 +17,26 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # `image-png` is not on by default and is needed for `Image::from_bytes`,
 # which is how the macOS template tray icon is compiled in. See `tray_icon`.
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+#
+# `macos-private-api` backs `"macOSPrivateApi": true` in tauri.conf.json, which
+# is what lets the pill be transparent on macOS. It is **not** in a
+# `cfg(target_os = "macos")` block, and both halves of that are deliberate:
+#
+#   * tauri-build compares the config against the features and is not
+#     platform-gated — `AppConfig::features()` pushes `macos-private-api`
+#     whenever the config flag is set, whatever the target. So a Linux build of
+#     this same config fails without it too. That is not theoretical; it is how
+#     this was found.
+#
+#   * the check reads the top-level `[dependencies]` only
+#     (`find_dependency` → `manifest.dependencies`), so putting it in a target
+#     block would satisfy the compiler and not the check.
+#
+# It costs Linux and Windows nothing. The APIs it guards are written
+# `cfg(any(not(target_os = "macos"), feature = "macos-private-api"))` — already
+# available off macOS — and the feature pulls in no new dependencies, only
+# forwarding to tauri-runtime.
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-global-shortcut = "2"
 
 # The whole pipeline — engine, VAD, segmenter, corrector, clipboard — already
