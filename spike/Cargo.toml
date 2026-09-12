@@ -50,6 +50,39 @@ ct2rs = { version = "0.9", features = ["whisper", "dnnl"] }
 [target.'cfg(not(target_arch = "x86_64"))'.dependencies]
 ct2rs = { version = "0.9", features = ["whisper"] }
 
+# Apple Silicon also gets Accelerate — **in addition to `ruy`, not instead of
+# it.** They are not two answers to one question, which is how this was written
+# down before anyone read the dispatch.
+#
+# CTranslate2 picks a GEMM backend per compute type, in a fixed order
+# (`src/cpu/backend.cc`, `get_gemm_backend`):
+#
+#   Accelerate  float32 only
+#   Ruy         int8 *or* float32, and it is consulted last
+#
+# So the two split the work rather than competing for it. With `ruy` alone —
+# which is what this target has been building — Ruy does both halves. Adding
+# `accelerate` moves only the float32 half to Apple's BLAS, where `cblas_sgemm`
+# reaches the AMX block; the int8 half, which is the model's actual weights,
+# stays exactly where it was.
+#
+# Swapping rather than adding would be a quiet disaster. `mayiuse_int8` is
+# `has_gemm_backend(INT8)` (`src/types.cc:145`), and with Accelerate alone that
+# is false — so int8 would resolve away to float32 and the app would stop
+# running the weights it was benchmarked on, three times the memory, without
+# saying anything.
+#
+# Cargo unions features across every target block that matches, so this one
+# adds `accelerate` on top of the `not(x86_64)` block above rather than
+# replacing it. It is `target_os = "macos"` and not merely `aarch64` because
+# Accelerate is an Apple framework: on ARM Linux the link would simply fail.
+#
+# **Unmeasured**, and the one that could go either way — Accelerate does its
+# own threading underneath a CT2 worker thread, so oversubscription is the
+# thing to watch for. `bench_backend` in setup.sh builds it both ways.
+[target.'cfg(all(target_arch = "aarch64", target_os = "macos"))'.dependencies]
+ct2rs = { version = "0.9", features = ["whisper", "accelerate"] }
+
 # macOS only, and for one sysctl. `hw.perflevel0.physicalcpu` is how many
 # performance cores this chip has, which on Apple Silicon is the number that
 # matters and not the one `num_cpus` reports. libc has no binding for the QoS
