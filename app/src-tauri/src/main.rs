@@ -661,6 +661,13 @@ fn toggle(app: &AppHandle) {
 
 /// The worker thread: one engine, loaded once, for the life of the process.
 fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
+    // First thing on this thread, and before any engine exists. This is the
+    // thread that will build the engine and run every decode on it, and on
+    // Apple Silicon the QoS set here is what decides whether that work lands
+    // on the performance cores or the efficiency ones — CTranslate2's pool
+    // inherits it. See `live::prefer_performance_cores`.
+    live::prefer_performance_cores();
+
     let threads = live::decode_threads();
 
     let corrector = Corrector::new();

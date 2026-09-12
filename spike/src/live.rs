@@ -166,6 +166,9 @@ pub fn paste_mode() -> (bool, bool) {
 /// Load the model, print what it cost. Shared so both modes prove the same
 /// thing: one load, many utterances.
 fn warm_up(model_dir: &Path, threads: usize) -> Result<Engine> {
+    // Before `Engine::load`, not after: the engine's thread pool inherits the
+    // QoS of whichever thread builds it. See `prefer_performance_cores`.
+    prefer_performance_cores();
     println!("model   {}", model_dir.display());
     println!("threads {threads}");
     let t0 = Instant::now();
@@ -602,9 +605,7 @@ fn run_mic(model_dir: &Path, threads: usize) -> Result<()> {
 /// How many threads CTranslate2 gets. Override with `KOTHA_THREADS`.
 ///
 /// Physical cores, not logical: on the Ryzen 5600G 6 beat 12, so SMT actively
-/// hurt. The M2 is 4 performance + 4 efficiency cores with no SMT at all, so
-/// 8 may well lose to 4 there for a different reason — measure before
-/// assuming.
+/// hurt.
 ///
 /// Shared by the CLI and the app deliberately. A decode running at a different
 /// thread count depending on which front end started it would make every
@@ -613,8 +614,131 @@ pub fn decode_threads() -> usize {
     std::env::var("KOTHA_THREADS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(num_cpus::get_physical)
+        .unwrap_or_else(default_threads)
 }
+
+/// Every core, because on a symmetric machine every core is the same core.
+#[cfg(not(target_os = "macos"))]
+fn default_threads() -> usize {
+    num_cpus::get_physical()
+}
+
+/// **Performance cores only**, which on Apple Silicon is not the same number
+/// `num_cpus` reports and is the difference this whole module exists for.
+///
+/// An M2 has 4 performance cores and 4 efficiency cores. `hw.physicalcpu` says
+/// 8 and every one of them can run this code, so `num_cpus::get_physical()`
+/// hands back 8 — and 8 is the wrong answer, because the eight are not
+/// interchangeable. An efficiency core is roughly a third of a performance
+/// core.
+///
+/// That asymmetry costs more than the arithmetic suggests. CTranslate2 splits a
+/// layer's work across its threads and then *joins*: the layer is not finished
+/// until the slowest thread is. Give it eight equal shares on four fast cores
+/// and four slow ones and every fast core finishes its share and then waits,
+/// idle, for the slow ones — so eight threads buy roughly what five would, and
+/// pay eight threads' worth of synchronisation and memory traffic for it. Four
+/// threads on four performance cores is the shape the hardware actually has.
+///
+/// `hw.perflevel0` is always the fastest level macOS knows about, so this is
+/// correct rather than merely Apple-Silicon-specific: on an Intel Mac there is
+/// one level, `perflevel0.physicalcpu` equals `hw.physicalcpu`, and the answer
+/// is the same one `num_cpus` would have given. Older systems predating the
+/// key fall through to `num_cpus`.
+///
+/// This pairs with `prefer_performance_cores` and is close to useless without
+/// it: asking for four threads does not tell macOS *which* four cores to run
+/// them on. The thread count says how much parallelism to create; the QoS class
+/// says where it is allowed to land. Both, or neither.
+///
+/// **Unmeasured.** The reasoning is the hardware's, not a benchmark's — this
+/// machine has never built the engine. `KOTHA_THREADS` is how the sweep gets
+/// run; see `bench_threads` in setup.sh.
+#[cfg(target_os = "macos")]
+fn default_threads() -> usize {
+    perflevel0_physicalcpu().unwrap_or_else(num_cpus::get_physical)
+}
+
+/// `sysctl hw.perflevel0.physicalcpu`, or `None` if the key is not there.
+#[cfg(target_os = "macos")]
+fn perflevel0_physicalcpu() -> Option<usize> {
+    let name = c"hw.perflevel0.physicalcpu";
+    let mut out: i32 = 0;
+    let mut len = std::mem::size_of::<i32>();
+
+    // Safety: `name` is a NUL-terminated C string, and `out`/`len` are a live
+    // i32 and its true size. sysctlbyname writes at most `len` bytes.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut out as *mut i32).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+
+    (rc == 0 && out > 0).then_some(out as usize)
+}
+
+/// Ask macOS to schedule this thread on the performance cores.
+///
+/// There is no core affinity on Apple Silicon — nothing pins a thread to a
+/// P-core and Apple does not intend to offer one. What there is instead is
+/// **quality of service**, and it is not advisory in the way that word usually
+/// implies: the QoS class is the input the scheduler uses to decide which
+/// *cluster* a thread is eligible for. A `BACKGROUND` thread runs on the
+/// efficiency cores and only there, however idle the machine is. A thread that
+/// never declares a class inherits whatever it was given, which for a thread
+/// spawned out of a GUI event loop is not something to leave to chance.
+///
+/// `USER_INITIATED` is the honest description of a dictation decode: the user
+/// pressed a key and is sitting there waiting for the words to appear. It is
+/// also the right ceiling. `USER_INTERACTIVE` exists for work the next frame
+/// depends on — it is the main thread's class — and a multi-second decode is
+/// not that; asking for it on a long compute is what Apple's own guidance warns
+/// against, and the system may demote it anyway.
+///
+/// **Call this on the thread that will own the engine, before the engine is
+/// built.** That ordering is the whole trick. CTranslate2 and ruy both create
+/// their thread pools out of whichever thread constructs and first drives them,
+/// and macOS propagates the creating thread's QoS to threads made with
+/// `pthread_create` and default attributes. Set it first and the entire pool is
+/// born at the right class; set it afterwards and the caller is promoted while
+/// the pool that does the actual arithmetic stays wherever it landed. Kotha
+/// gets this for free because one worker thread owns the engine for the life of
+/// the process, which it does for unrelated reasons.
+///
+/// Not fatal if it fails, like the window hints: the decode still runs, just
+/// possibly on the wrong side of the chip.
+#[cfg(target_os = "macos")]
+pub fn prefer_performance_cores() {
+    // `QOS_CLASS_USER_INITIATED`, from <sys/qos.h>. libc has no binding for
+    // any of this, so the constant and the function are both spelled out.
+    // Stable since 10.10 and it lives in libSystem, which is always linked.
+    const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+
+    extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+
+    // Safety: no arguments to get wrong. It sets a property of the calling
+    // thread and touches nothing else.
+    let rc = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0) };
+
+    // pthread functions return the error number rather than setting errno.
+    if rc == 0 {
+        println!("cores   user-initiated QoS — decode belongs on the P-cores");
+    } else {
+        eprintln!(
+            "cores   could not raise this thread's QoS (error {rc}); the decode \
+             may be scheduled onto the efficiency cores and run slower"
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn prefer_performance_cores() {}
 
 /// A live capture: the stream, the blocks it produces, and the converter that
 /// turns them into 16 kHz mono.

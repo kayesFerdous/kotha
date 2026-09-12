@@ -50,5 +50,13 @@ ct2rs = { version = "0.9", features = ["whisper", "dnnl"] }
 [target.'cfg(not(target_arch = "x86_64"))'.dependencies]
 ct2rs = { version = "0.9", features = ["whisper"] }
 
+# macOS only, and for one sysctl. `hw.perflevel0.physicalcpu` is how many
+# performance cores this chip has, which on Apple Silicon is the number that
+# matters and not the one `num_cpus` reports. libc has no binding for the QoS
+# call next to it in `live.rs`, so that one is declared by hand; this one it
+# does have.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # [profile.release] now lives in the workspace root Cargo.toml — cargo only
 # honours profiles there, and keeping a copy here is a warning, not an override.
