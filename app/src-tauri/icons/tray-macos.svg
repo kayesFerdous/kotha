@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+  <!-- The macOS menu bar icon, and the only one of Kotha's icons that is not
+       allowed to have a colour.
+
+       A template image: macOS reads the alpha channel and throws the colour
+       away, tinting the shape itself — black on a light menu bar, white on a
+       dark one, and the highlight colour while the menu is open. So this is
+       the same seven-bar waveform as `kotha.svg` with the dark capsule
+       removed, because under a template the capsule would be a solid blob and
+       the bars inside it would vanish.
+
+       36 x 36 because tray-icon scales the image to 18 points tall
+       (tray-icon 0.24.2, macos/mod.rs:296), and 2x of that is crisp on a
+       retina display without carrying a 512 px icon for an 18 pt slot. The
+       waveform fills 28 of the 36, which is the padding a menu bar expects. -->
+  <g fill="#000000">
+    <rect x="3.6"  y="16.4" width="2.4" height="3.2"  rx="1.2"/>
+    <rect x="8.0"  y="12.8" width="2.4" height="10.4" rx="1.2"/>
+    <rect x="12.4" y="7.6"  width="2.4" height="20.8" rx="1.2"/>
+    <rect x="16.8" y="4.0"  width="2.4" height="28.0" rx="1.2"/>
+    <rect x="21.2" y="9.6"  width="2.4" height="16.8" rx="1.2"/>
+    <rect x="25.6" y="14.4" width="2.4" height="7.2"  rx="1.2"/>
+    <rect x="30.0" y="16.4" width="2.4" height="3.2"  rx="1.2"/>
+  </g>
+</svg>

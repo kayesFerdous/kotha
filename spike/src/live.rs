@@ -261,6 +261,9 @@ impl Output {
             }
             Err(e) => {
                 eprintln!("synthetic paste unavailable ({e})");
+                if let Some(hint) = permission_hint(&e) {
+                    eprintln!("{hint}");
+                }
                 eprintln!("        falling back to clipboard only — press paste \
                            yourself, nothing is lost");
                 None
@@ -450,12 +453,69 @@ fn fresh_token(_: &Enigo) -> Option<String> {
     None
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS has one route and one gate on it.
+///
+/// The route is Quartz: enigo posts `CGEvent`s, which reach every application
+/// including native ones, so there is no equivalent of Linux's three-way choice
+/// and the `portal` flag means nothing here.
+///
+/// The gate is **Accessibility**. Synthetic input is a TCC-protected
+/// capability, and an untrusted process may post events all day without one of
+/// them arriving — which would be exactly the kind of silent failure this
+/// project refuses to ship. enigo checks first: `Enigo::new` calls
+/// `AXIsProcessTrustedWithOptions` and returns `NoPermission` rather than
+/// handing back a connection that cannot type
+/// (enigo 0.6.1, `macos/macos_impl.rs:513`). So the failure is loud, and this
+/// function's job is only to make it *useful* — see `permission_hint`.
+///
+/// `open_prompt_to_get_permissions` is left at its default of `true`, which is
+/// deliberate: that is the flag that makes the check raise the system dialog,
+/// and the system dialog is how macOS is supposed to ask. It fires only when
+/// the permission is actually missing, and only when the user has already
+/// chosen a paste mode — which is the second of the two opt-ins described
+/// above `paste_mode`.
+///
+/// **Unverified.** Written 2026-09-03 against enigo's source on a machine that
+/// has not built this target.
+#[cfg(target_os = "macos")]
+fn connect_keyboard(
+    _portal: bool,
+    _restore_token: Option<String>,
+) -> Result<(Enigo, &'static str), enigo::NewConError> {
+    Enigo::new(&Settings::default()).map(|k| (k, "quartz — reaches every window"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn connect_keyboard(
     _portal: bool,
     _restore_token: Option<String>,
 ) -> Result<(Enigo, &'static str), enigo::NewConError> {
     Enigo::new(&Settings::default()).map(|k| (k, "native"))
+}
+
+/// The line that turns a refusal into something the user can act on.
+///
+/// "The application does not have the permission to simulate input" is true and
+/// useless: it does not say which permission, where it lives, or what to do
+/// afterwards. On macOS all three have specific answers, and the third one is
+/// the trap — `Output::open` runs again only when the tray's Text output
+/// setting *changes* (`main.rs`, the `chosen != mode` guard), so granting
+/// Accessibility while Kotha is running changes nothing until the mode is
+/// picked again. A user who grants the permission, sees no difference, and
+/// concludes the app is broken is a user lost to a missing sentence.
+#[cfg(target_os = "macos")]
+fn permission_hint(e: &enigo::NewConError) -> Option<&'static str> {
+    matches!(e, enigo::NewConError::NoPermission).then_some(
+        "        macOS calls it Accessibility. If the system did not just ask,          open
+        System Settings › Privacy & Security › Accessibility and          switch Kotha on.
+        Then choose Text output in the tray menu          again — Kotha only retries when
+        that setting changes.",
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn permission_hint(_: &enigo::NewConError) -> Option<&'static str> {
+    None
 }
 
 fn paste_chord(kb: &mut Enigo) -> Result<(), enigo::InputError> {

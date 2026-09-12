@@ -15,7 +15,9 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# `image-png` is not on by default and is needed for `Image::from_bytes`,
+# which is how the macOS template tray icon is compiled in. See `tray_icon`.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2"
 
 # The whole pipeline — engine, VAD, segmenter, corrector, clipboard — already
@@ -48,3 +50,25 @@ serde_json = "1"
 # the version Tauri already builds, or the types are not the same types.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"
+
+# macOS only, and for the same job `gtk` does on Linux: stopping the pill from
+# becoming the active window. Tauri exposes `ns_window()` as a raw pointer and
+# nothing above it, so the three AppKit calls in `no_activate` have to be made
+# directly.
+#
+# Pinned to the version Tauri already builds — tao and wry pull exactly this,
+# so the `NSWindow` reached through `ns_window()` is the same `NSWindow` this
+# crate names. A different major here would be a different type with the same
+# spelling, which is the `gtk` note above repeated in Objective-C.
+#
+# `objc2-app-kit` is cut down to the two features that matter: `NSWindow` for
+# the class and `NSResponder` because `NSWindow` inherits from it and the
+# generated class definition is gated on it. Cargo unions this with whatever
+# tao asks for, so the narrow list documents intent rather than saving build
+# time.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSWindow",
+    "NSResponder",
+] }

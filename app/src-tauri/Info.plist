@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist at bundle time. Tauri looks for this
+  file by name, in the same directory as tauri.conf.json, with no configuration
+  needed (tauri-utils 2.9.3, MacConfig::info_plist).
+
+  A separate file and not a key in tauri.conf.json because Tauri offers no
+  inline form: the only alternatives are this or a path to somewhere else,
+  which would be the same file further away.
+
+  Only two keys, and both are load-bearing.
+-->
+<plist version="1.0">
+<dict>
+  <!--
+    Without this key macOS does not show a microphone prompt and deny it — it
+    kills the process, on the first frame cpal asks for. An app whose entire
+    purpose is listening cannot ship without it, and it fails at exactly the
+    moment nothing has been logged yet.
+
+    The wording is what the user reads in the system dialog, so it says where
+    the audio goes rather than what the app is. "Never leaves this computer" is
+    the fact that matters to someone being asked for their microphone, and it
+    is true: the model runs locally and there is no network path after the
+    first-run download.
+  -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Kotha listens when you press the dictation key, and transcribes what you say on this computer. Your voice never leaves it.</string>
+
+  <!--
+    An agent app: no Dock icon, no ⌘-Tab entry, driven by the menu bar and a
+    hotkey. `setup` sets the same thing at runtime with
+    ActivationPolicy::Accessory; this sets it from launch, which is the
+    difference between no Dock icon and a Dock icon that appears and vanishes.
+
+    It does not stop the first-run window taking focus — an agent app may
+    activate itself when it asks, which is what tao's set_focus does.
+
+    If that window ever fails to come forward, this is the line to try
+    removing first: the runtime call still covers the pill.
+  -->
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

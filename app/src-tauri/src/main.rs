@@ -29,7 +29,8 @@
 //! cargo run -p kotha --release
 //! ```
 //!
-//! Then press F9, or use the tray icon. The key is settable — see `HOTKEYS`.
+//! Then press F9 — ⌥⇧D on macOS, where F9 is Next Track — or use the tray
+//! icon. The key is settable, and the default is per-platform; see `HOTKEYS`.
 //!
 //! Environment:
 //!
@@ -476,12 +477,44 @@ fn main() {
         .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
         .invoke_handler(tauri::generate_handler![start_download, hotkey_label])
         .setup(move |app| {
+            // Kotha is a tray application, and on macOS that is a policy, not
+            // a style. `Accessory` drops the Dock icon and the ⌘-Tab entry —
+            // right on its own for something driven by a hotkey and a menu bar
+            // item — but the reason it is load-bearing is focus: a `Regular`
+            // app *activates* when one of its windows is ordered front, and
+            // activating deactivates whatever the user was typing into. The
+            // pill cannot become key (see `set_focusable` below), yet without
+            // this the app around it would still take the foreground and the
+            // caret would stop.
+            //
+            // It does not break the first-run window, which is the one window
+            // here that *should* take focus: `set_focus` reaches
+            // `activateIgnoringOtherApps: YES` in tao
+            // (macos/util/async.rs:236), and an accessory app is allowed to
+            // activate itself when it asks explicitly. Checked against tao
+            // 0.35.3, not yet watched on screen.
+            //
+            // The one thing given up is the application menu bar, and with it
+            // the default ⌘C/⌘V/⌘A inside Kotha's own windows. Nothing in
+            // Phase 4 has a text field. Phase 5's settings will, and at that
+            // point this needs an edit menu rather than a different policy.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let pill = app
                 .get_webview_window("pill")
                 .expect("no window labelled `pill` — check tauri.conf.json");
 
             // The one thing this app cannot get wrong. A dictation pill that
             // steals focus takes the caret with it and the feature collapses.
+            //
+            // On macOS this is stronger than it looks. tao's window class
+            // overrides both
+            // `canBecomeKeyWindow` and `canBecomeMainWindow` to return this
+            // flag (macos/window.rs:415-425), so `false` here makes the pill
+            // *structurally* unable to become the key window — which is the
+            // guarantee `NSWindowStyleMaskNonactivatingPanel` exists to give,
+            // reached without becoming an NSPanel — no NSPanel needed.
             pill.set_focusable(false)?;
             pill.set_size(LogicalSize::new(PILL_WINDOW.0, PILL_WINDOW.1))?;
             no_activate(&pill);
@@ -865,7 +898,80 @@ fn no_activate(w: &WebviewWindow) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// The same job on macOS, where the mechanism is different in every respect
+/// except the consequence.
+///
+/// AppKit has no window type hints. What it has instead is a *level* and a
+/// *collection behaviour*, and the pill needs both changed for reasons the X11
+/// path never had to think about:
+///
+///   * **Level.** Tauri's `alwaysOnTop` maps to `NSFloatingWindowLevel` (3),
+///     which floats above ordinary windows and below almost everything
+///     interesting — including a full-screen application, which owns its own
+///     Space and covers every window below the status level. A dictation pill
+///     that vanishes the moment the user goes full-screen is a pill that is
+///     absent exactly when someone is writing. `NSStatusWindowLevel` (25) is
+///     where the menu bar's own furniture lives and is the right neighbourhood
+///     for this.
+///
+///   * **Collection behaviour.** By default a window belongs to the Space it
+///     was created on. The hotkey is global, so the pill has to be able to
+///     appear on whichever Space the user is on when they press it, over a
+///     full-screen window, without dragging them somewhere else.
+///     `CanJoinAllSpaces` and `Stationary` say "follow the user, do not move
+///     them"; `FullScreenAuxiliary` is what permits it over a full-screen app
+///     at all.
+///
+/// Focus itself is handled a layer up, by the accessory activation policy in
+/// `setup` — see the note there. This function is only about *where* the pill
+/// is allowed to draw. The two are separable and both are required: an
+/// accessory app whose window sits at the floating level still disappears
+/// under full screen, and a status-level window in a regular app still steals
+/// activation.
+///
+/// **Unverified.** Written 2026-09-03 on a machine that has never built this
+/// target; the reasoning is from AppKit's documented semantics, not from
+/// watching it. What has to be checked on the first real run is the Phase 4
+/// acceptance test — the caret keeps blinking in the window behind — and then
+/// the same thing again with that window full-screen.
+///
+/// Safety: `NSWindow` is `MainThreadOnly`, and this is called from `setup`,
+/// which Tauri runs on the main thread. Both setters are safe wrappers; the
+/// only unsafe step is trusting `ns_window()` to hand back a live `NSWindow`,
+/// which it does for a window that exists — and it is fetched by label
+/// immediately above the call.
+///
+/// Not fatal if it fails, for the same reason the X11 hint is not: without it
+/// the pill still works, it is just in the wrong place in the stack.
+#[cfg(target_os = "macos")]
+fn no_activate(w: &WebviewWindow) {
+    use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
+
+    let ptr = match w.ns_window() {
+        Ok(p) => p.cast::<NSWindow>(),
+        Err(e) => {
+            eprintln!("window  no NSWindow ({e}); the pill may hide under \
+                       full-screen apps");
+            return;
+        }
+    };
+
+    let Some(win) = (unsafe { ptr.as_ref() }) else {
+        eprintln!("window  NSWindow pointer was null; the pill may hide under \
+                   full-screen apps");
+        return;
+    };
+
+    win.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    win.setLevel(NSStatusWindowLevel);
+    println!("window  status level, all spaces, over full screen");
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn no_activate(_: &WebviewWindow) {}
 
 /// Put the pill on screen, wherever the user's screen currently is.
@@ -1022,9 +1128,31 @@ fn paste_choice(path: &Path) -> String {
 /// application to claim — an IDE's build key, a browser extension — which is
 /// exactly what the rest of this list is for.
 ///
+/// **On macOS the default is `Alt+Shift+D`, because F9 is not a function key
+/// there.** On every current Apple keyboard the top row is media controls
+/// unless the user has turned on "Use F1, F2, etc. keys as standard function
+/// keys" — and F9 specifically is Next Track. Left as the default, the shipped
+/// hotkey would not start a dictation; it would skip the user's music. Both of
+/// F9's reasons are Linux's anyway: fcitx and ibus are not what a Mac switches
+/// input sources with, and the double-delivery defect is KWin's.
+///
+/// `Alt+Shift+D` — ⌥⇧D — is a chord rather than a bare key, so it is harder for
+/// another application to claim; it is nowhere near ⌃Space and ⌃⌥Space, which
+/// is where macOS puts input-source switching and therefore where a Bengali
+/// keyboard layout lives; and D is for dictate. Option is the special-character
+/// modifier, so ⌥⇧D would type `Î` if it were not grabbed — it is grabbed,
+/// because Carbon's `RegisterEventHotKey` consumes the key.
+///
+/// Kayes's to overrule: it is a default, changeable from the tray without
+/// touching this list.
+///
 /// The list is what the menu offers, not what is accepted. `hotkey` validates by
 /// parsing, so anything Tauri understands can be written into `settings.json` by
 /// hand and the menu will show it alongside these.
+#[cfg(target_os = "macos")]
+const HOTKEYS: [&str; 4] = ["Alt+Shift+D", "Ctrl+Shift+Space", "Ctrl+Alt+Space", "F9"];
+
+#[cfg(not(target_os = "macos"))]
 const HOTKEYS: [&str; 4] = ["F9", "Ctrl+Shift+Space", "Alt+Shift+D", "Ctrl+Alt+Space"];
 
 /// The chosen hotkey. Junk in the file falls back to the default rather than
@@ -1066,6 +1194,44 @@ fn paste_flags(mode: &str) -> (bool, bool) {
         "paste" => (true, false),
         _ => (false, false),
     }
+}
+
+/// The picture in the tray, which is not the same picture on macOS.
+///
+/// Everywhere else the application icon is the right answer: a menu bar or a
+/// system tray that draws colour should be given the same object the user sees
+/// in a launcher.
+///
+/// macOS draws a **template image**. It reads the alpha channel, discards the
+/// colour, and tints the shape itself — dark on a light menu bar, light on a
+/// dark one, and the highlight colour while the menu is open. That is what
+/// makes a menu bar look like one thing rather than a row of stickers, and it
+/// is not optional in the sense that matters: handed `kotha.svg`, macOS would
+/// take the alpha of a *filled rounded square* and draw a solid blob, with the
+/// waveform inside it invisible. The icon is also `#18181b`, which on a dark
+/// menu bar is nearly the background colour, so the untemplated version fails
+/// twice over.
+///
+/// So macOS gets `tray-macos.png`: the same seven bars, no capsule, pure black
+/// on transparent, 36 px for an 18 pt slot (tray-icon 0.24.2 scales to 18 pt;
+/// 2x is crisp on this display). It is compiled in rather than bundled,
+/// because a tray icon that depends on a file being found is a tray icon that
+/// is sometimes missing.
+///
+/// **Unverified**, like the rest of 2026-09-03: the pixels were checked (seven
+/// bars, every opaque pixel `#000000`, corners fully transparent), but nothing
+/// has drawn them into a menu bar yet.
+#[cfg(target_os = "macos")]
+fn tray_icon(_app: &AppHandle) -> tauri::Result<tauri::image::Image<'_>> {
+    tauri::image::Image::from_bytes(include_bytes!("../icons/tray-macos.png"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tray_icon(app: &AppHandle) -> tauri::Result<tauri::image::Image<'_>> {
+    Ok(app
+        .default_window_icon()
+        .expect("no bundle icon — check tauri.conf.json")
+        .clone())
 }
 
 fn tray(app: &AppHandle) -> tauri::Result<()> {
@@ -1133,11 +1299,10 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
     )?;
 
     TrayIconBuilder::new()
-        .icon(
-            app.default_window_icon()
-                .expect("no bundle icon — check tauri.conf.json")
-                .clone(),
-        )
+        .icon(tray_icon(app)?)
+        // A no-op everywhere but macOS, where it is the difference between an
+        // icon and a smudge. See `tray_icon`.
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Kotha")
         .menu(&menu)
         .show_menu_on_left_click(true)

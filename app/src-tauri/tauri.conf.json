@@ -12,6 +12,8 @@
     "withGlobalTauri": true,
     "security": { "csp": null },
 
+    "macOSPrivateApi": true,
+
     "windows": [
       {
         "label": "pill",
