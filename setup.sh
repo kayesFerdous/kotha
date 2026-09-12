@@ -11,6 +11,7 @@
 #
 #   ./setup.sh                 # everything
 #   ./setup.sh --skip-model    # toolchain only
+#   ./setup.sh --bench         # sweep decode thread counts, then stop
 #   ./setup.sh --force         # ignore the battery guard
 
 set -euo pipefail
@@ -25,11 +26,13 @@ MODEL_FILES=(model.bin tokenizer.json vocabulary.json config.json preprocessor_c
 
 FORCE=0
 SKIP_MODEL=0
+BENCH=0
 for arg in "$@"; do
   case "$arg" in
     --force)      FORCE=1 ;;
     --skip-model) SKIP_MODEL=1 ;;
-    -h|--help)    sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --bench)      BENCH=1 ;;
+    -h|--help)    sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
@@ -54,6 +57,111 @@ require_power() {
     Plug in and re-run, or pass --force to override."
   fi
 }
+
+# -------------------------------------------------------------------- bench
+#
+# What this answers: how many threads CTranslate2 should get on this machine.
+#
+# It exists because the honest answer is not derivable. On the Ryzen 5600G six
+# threads beat twelve, so SMT hurt. An M-series chip has no SMT and a different
+# problem instead — four performance cores and four efficiency cores, where the
+# efficiency ones are roughly a third of the speed and CTranslate2 joins at
+# every layer, so the fast threads finish and wait. `decode_threads()` now
+# defaults to the performance-core count for that reason. This is the sweep
+# that says whether that was right.
+#
+# Peak RSS comes along for free and is the other number worth having: the
+# Ryzen's 1.4 GB is the figure to beat on a 16 GB laptop.
+
+bench() {
+  require_power "run the benchmark — it builds CTranslate2 and decodes audio"
+
+  [[ -s "$MODEL_DIR/model.bin" ]] ||
+    die "No model at $MODEL_DIR.
+    Run ./setup.sh first."
+
+  shopt -s nullglob
+  local wavs=("$ROOT"/samples/*.wav)
+  shopt -u nullglob
+  [[ ${#wavs[@]} -gt 0 ]] ||
+    die "No WAVs in $ROOT/samples/.
+    The sweep needs audio to decode — 16 kHz mono, and the same files every
+    time or the numbers are not comparable across runs. A few minutes of
+    speech is plenty."
+
+  # The sweep points. 1 and 2 show how the curve starts, then the two that
+  # matter: the performance-core count and every physical core. On a machine
+  # with one performance level these collapse and the duplicates drop out.
+  local p_cores t_cores
+  if [[ "$(uname)" == "Darwin" ]]; then
+    p_cores=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || sysctl -n hw.physicalcpu)
+    t_cores=$(sysctl -n hw.physicalcpu)
+    say "Machine"
+    ok "$(sysctl -n machdep.cpu.brand_string) — ${p_cores} performance core(s), \
+$(( t_cores - p_cores )) efficiency core(s)"
+  else
+    p_cores=$(nproc --all)
+    t_cores=$p_cores
+  fi
+
+  local counts
+  counts=$(printf '%s\n' 1 2 "$p_cores" $(( p_cores + 2 )) "$t_cores" |
+           awk -v max="$t_cores" '$1 >= 1 && $1 <= max' | sort -n -u)
+
+  say "Building (CTranslate2 from source the first time — 15–30 minutes)"
+  ( cd "$ROOT" && cargo build --release -p kotha-spike ) || die "build failed"
+  ok "built"
+
+  say "Sweeping ${#wavs[@]} file(s) at: $(echo $counts | tr '\n' ' ')"
+  printf '\n  %-9s %-9s %-12s %s\n' threads RTF realtime "peak RSS"
+  printf '  %-9s %-9s %-12s %s\n' ------- ------- -------- --------
+
+  local log rtf rss n
+  log=$(mktemp)
+  for n in $counts; do
+    # /usr/bin/time -l reports peak RSS in bytes on macOS; GNU time uses -v and
+    # kilobytes, so this is read back defensively rather than assumed.
+    KOTHA_THREADS="$n" /usr/bin/time -l \
+      "$ROOT/target/release/kotha-spike" "$MODEL_DIR" "${wavs[@]}" \
+      >"$log" 2>&1 || { warn "$n threads: run failed — see $log"; continue; }
+
+    rtf=$(grep -Eo '^RTF [0-9.]+' "$log" | awk '{print $2}')
+    rss=$(grep -Eo '[0-9]+ +maximum resident set size' "$log" | awk '{print $1}')
+    printf '  %-9s %-9s %-12s %s\n' \
+      "$n" "${rtf:-?}" \
+      "$(awk -v r="${rtf:-0}" 'BEGIN{ if (r>0) printf "%.2fx", 1/r; else print "?" }')" \
+      "$(awk -v b="${rss:-0}" 'BEGIN{ if (b>0) printf "%.2f GB", b/1073741824; else print "?" }')"
+  done
+  rm -f "$log"
+
+  say "Reading it"
+  cat <<'EOF'
+
+  Lowest RTF wins; it is decode seconds per audio second, so under 1.0 is
+  faster than real time. Put the winner in decode_threads() — and if it is not
+  the performance-core count, say so in the commit, because that is the
+  assumption the default was built on.
+
+  The other half of the M-series question is the GEMM backend, and it needs a
+  second build rather than a second run. Apple Silicon currently compiles ruy
+  *and* Accelerate: ruy does int8, Accelerate does float32. To measure what
+  Accelerate is worth, comment out the aarch64-apple-darwin block in
+  spike/Cargo.toml, build into a separate directory so neither result clobbers
+  the other, and sweep again:
+
+    CARGO_TARGET_DIR=target/no-accel ./setup.sh --bench
+
+  Do not instead swap Accelerate in for ruy. Accelerate serves float32 only,
+  so without ruy there is no int8 backend at all and the model silently
+  resolves to float32 — slower, three times the memory, and no warning.
+
+EOF
+}
+
+if [[ $BENCH -eq 1 ]]; then
+  bench
+  exit 0
+fi
 
 # ---------------------------------------------------------------- toolchain
 

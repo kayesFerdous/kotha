@@ -79,7 +79,9 @@ ct2rs = { version = "0.9", features = ["whisper"] }
 #
 # **Unmeasured**, and the one that could go either way — Accelerate does its
 # own threading underneath a CT2 worker thread, so oversubscription is the
-# thing to watch for. `bench_backend` in setup.sh builds it both ways.
+# thing to watch for. Measuring it means a second build, not a second run:
+# comment this block out, then `CARGO_TARGET_DIR=target/no-accel ./setup.sh
+# --bench` so the two builds do not clobber each other.
 [target.'cfg(all(target_arch = "aarch64", target_os = "macos"))'.dependencies]
 ct2rs = { version = "0.9", features = ["whisper", "accelerate"] }
 

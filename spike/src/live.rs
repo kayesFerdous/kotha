@@ -652,8 +652,8 @@ fn default_threads() -> usize {
 /// says where it is allowed to land. Both, or neither.
 ///
 /// **Unmeasured.** The reasoning is the hardware's, not a benchmark's — this
-/// machine has never built the engine. `KOTHA_THREADS` is how the sweep gets
-/// run; see `bench_threads` in setup.sh.
+/// machine has never built the engine. `KOTHA_THREADS` overrides it, and
+/// `./setup.sh --bench` sweeps it against every count that makes sense here.
 #[cfg(target_os = "macos")]
 fn default_threads() -> usize {
     perflevel0_physicalcpu().unwrap_or_else(num_cpus::get_physical)
