@@ -82,9 +82,20 @@
      painted bar and a lit one, and it is most of why the thing reads as a
      glyph. Set it to 0 and the design dies. */
   --bloom: 12px;
-  /* How fast a bar reaches its new brightness. Two frames at 30 fps: long
-     enough to smooth the stream, short enough to still feel live. */
-  --ease: 90ms;
+  /* How fast a bar DIMS. Brightening is not eased at all — pill.js writes
+     --ease: 0ms on any frame the voice is rising, so a syllable reaches full
+     on the frame it arrives.
+
+     Easing both directions cost 88 ms of attack, measured, on top of
+     everything the audio path already costs, and it was the single largest
+     term in the delay between talking and seeing it. Easing is worth having
+     on the way down, where it turns thirty discrete samples a second into a
+     light that falls away instead of strobing, and worth nothing on the way
+     up, where it is indistinguishable from lag. Ears are far more forgiving
+     of a slow decay than of a slow onset; eyes are the same.
+
+     --ease is the live value and JS owns it. --fall is the number. */
+  --fall: 90ms;
 
   /* --- the glyph -------------------------------------------------------- */
   /* Five bars, tapering out from the middle. The taper is the mark: five
@@ -204,8 +215,11 @@ body {
      the same number so that an unlit bar throws nothing at all. */
   box-shadow: 0 0 calc(var(--b, 0) * var(--bloom))
               rgb(255 255 255 / calc(var(--b, 0) * 0.5));
-  transition: opacity var(--ease) linear,
-              box-shadow var(--ease) linear,
+  /* var(--ease, var(--fall)): --ease is unset until the first microphone
+     frame arrives, and a bar that lights before then should still dim
+     properly. */
+  transition: opacity var(--ease, var(--fall)) linear,
+              box-shadow var(--ease, var(--fall)) linear,
               background-color 200ms ease;
 }
 

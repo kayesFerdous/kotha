@@ -752,14 +752,35 @@ pub struct Microphone {
     pub intake: Intake,
     /// How many interleaved samples make up 1/30 second at the device's rate.
     ///
-    /// The pill's waveform wants a steady 30 levels a second, and a capture
-    /// block is whatever size the driver chose — 64 ms on the Linux box,
-    /// 10.7 ms on the M2. Neither is 33 ms, so the app accumulates samples to
-    /// this size across blocks and emits one RMS per full window. Slicing per
-    /// block, which is what this used to describe, only handles blocks larger
-    /// than a window; see `meter` in the app for what the small ones did.
+    /// The pill's glyph wants a steady 30 levels a second, and a capture block
+    /// is whatever size the driver gave us — see BLOCKS_PER_SEC, which asks
+    /// for 10 ms and does not always get it. Whatever arrives, it is not
+    /// 33 ms, so the app accumulates samples to this size across blocks and
+    /// emits one RMS per full window. Slicing per block, which is what this
+    /// used to describe, only handles blocks larger than a window; see `meter`
+    /// in the app for what the small ones did.
     pub level_chunk: usize,
 }
+
+/// Capture blocks per second to ask the driver for.
+///
+/// A driver picks its own block size unless asked, and what it picks is not
+/// chosen with a meter in mind: this Linux box chose 64 ms, which means two
+/// whole 1/30 s windows land at once and then nothing arrives for 64 ms. The
+/// glyph updates in bursts at 15 Hz, showing audio that ended up to 64 ms ago,
+/// and no amount of work in the frontend can recover a level that has not been
+/// captured yet.
+///
+/// 100 blocks a second is 10 ms — small enough that the block stops being the
+/// largest term in how late the glyph is, large enough to stay well clear of
+/// the xrun territory a 2 ms buffer lives in. It is also roughly what
+/// CoreAudio already hands the M2 (10.7 ms), so this changes that machine
+/// barely at all.
+///
+/// Nothing downstream cares what size the blocks are: `Intake` re-blocks to
+/// 256-sample VAD frames and `meter` accumulates its own 1/30 s windows, so
+/// both were already independent of whatever the driver felt like sending.
+const BLOCKS_PER_SEC: u32 = 100;
 
 /// Open the default input device and start capturing.
 ///
@@ -784,7 +805,11 @@ pub fn open_microphone() -> Result<Microphone> {
     );
 
     let (tx, blocks) = mpsc::channel::<Vec<f32>>();
-    let stream = build_stream(&device, &supported, tx)?;
+    let stream = open_stream(&device, &supported, &tx)?;
+    // The stream holds the only sender that should stay alive: the receive
+    // loop in `meter` ends when every sender is gone, which is how a dictation
+    // stops. A clone left behind here would keep it running forever.
+    drop(tx);
     let intake = Intake::new(in_rate, channels)?;
     // Interleaved, so a frame is `channels` samples.
     let level_chunk = (in_rate as usize * channels / 30).max(1);
@@ -828,20 +853,66 @@ pub fn pick_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig>
         .context("device has no usable input configuration")
 }
 
-fn build_stream(
+/// Start the capture stream, asking for a small block and taking the driver's
+/// own if it will not give us one.
+///
+/// A `Fixed` buffer size is a request, not a setting. Devices are free to
+/// refuse it, and some refuse it only at the point the stream is built, with
+/// an error that says nothing useful — so the fallback is not defensive
+/// programming, it is the documented shape of this API. Falling back costs a
+/// laggier meter; failing outright costs the whole app.
+fn open_stream(
     device: &cpal::Device,
     supported: &cpal::SupportedStreamConfig,
+    tx: &mpsc::Sender<Vec<f32>>,
+) -> Result<cpal::Stream> {
+    let mut config = supported.config();
+    let rate = supported.sample_rate();
+
+    let wanted = match supported.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => {
+            Some((rate / BLOCKS_PER_SEC).clamp(*min, *max))
+        }
+        // The device will not say what it supports, so any number is a guess
+        // that can fail for no diagnosable reason. Do not guess.
+        cpal::SupportedBufferSize::Unknown => None,
+    };
+
+    if let Some(frames) = wanted {
+        config.buffer_size = cpal::BufferSize::Fixed(frames);
+        match build_stream(device, supported.sample_format(), &config, tx.clone()) {
+            Ok(stream) => {
+                println!(
+                    "buffer  {frames} frames ({:.1} ms) requested and granted",
+                    frames as f64 / rate as f64 * 1000.0
+                );
+                return Ok(stream);
+            }
+            Err(e) => eprintln!(
+                "buffer  {frames} frames refused ({e}) — taking the driver's own                  block size, which will make the pill's glyph lag the voice"
+            ),
+        }
+        config.buffer_size = cpal::BufferSize::Default;
+    }
+
+    println!("buffer  the driver's own block size");
+    build_stream(device, supported.sample_format(), &config, tx.clone())
+}
+
+fn build_stream(
+    device: &cpal::Device,
+    format: cpal::SampleFormat,
+    config: &cpal::StreamConfig,
     tx: mpsc::Sender<Vec<f32>>,
 ) -> Result<cpal::Stream> {
-    let config = supported.config();
     let on_error = |e| eprintln!("audio stream error: {e}");
 
     // ponytail: the queue is unbounded. Audio is never dropped, it just arrives
     // late if decoding falls behind, which is the right trade at 1.5x realtime.
     // Bound it if a slower machine ever makes the backlog grow without end.
-    Ok(match supported.sample_format() {
+    Ok(match format {
         cpal::SampleFormat::F32 => device.build_input_stream(
-            config,
+            config.clone(),
             move |data: &[f32], _: &_| {
                 let _ = tx.send(data.to_vec());
             },
@@ -849,7 +920,7 @@ fn build_stream(
             None,
         )?,
         cpal::SampleFormat::I16 => device.build_input_stream(
-            config,
+            config.clone(),
             move |data: &[i16], _: &_| {
                 let _ = tx.send(data.iter().map(|&v| v as f32 / 32768.0).collect());
             },

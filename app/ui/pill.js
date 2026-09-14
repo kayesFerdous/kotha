@@ -96,7 +96,14 @@ const root = document.documentElement;
 const segs = [...document.querySelectorAll(".seg")];
 const label = document.querySelector(".sr");
 
+/* How long a bar takes to dim, read once from the stylesheet so the number
+   still lives in exactly one place. Read once and not per frame on purpose:
+   getComputedStyle forces a style flush, and doing that thirty times a second
+   to look up a constant would cost more than the easing it configures. */
+const FALL = getComputedStyle(root).getPropertyValue("--fall").trim() || "90ms";
+
 let held = 0;
+let wasRising = false;
 let dwellTimer = null;
 /* The room's noise, in dBFS. Lives for the life of the page, so a second
    dictation in the same room starts already adapted. */
@@ -113,8 +120,24 @@ function shape(level) {
 /** One microphone frame. Called ~30 times a second while the mic is open. */
 function push(level) {
   const v = shape(level);
+  const rising = v > held;
   // Fast attack, slow release: jump straight to full, ease back down.
-  held = v > held ? v : held * RELEASE + v * (1 - RELEASE);
+  held = rising ? v : held * RELEASE + v * (1 - RELEASE);
+
+  /* The other half of that, and the half CSS cannot express on its own: a
+     transition eases in both directions or neither, so the duration has to be
+     switched from here. Brightening lands on the frame it happens; dimming
+     keeps --fall.
+
+     Written on <html> rather than on each bar, because custom properties
+     inherit — one write covers all five. Only on the frames the direction
+     actually flips, because writing an inherited custom property invalidates
+     style for everything below it, and speech flips direction perhaps a few
+     times a second while this function runs thirty. */
+  if (rising !== wasRising) {
+    root.style.setProperty("--ease", rising ? "0ms" : FALL);
+    wasRising = rising;
+  }
 
   for (let i = 0; i < segs.length; i++) {
     const b = (held - DISTANCE[i] * REACH) / RAMP;
