@@ -29,9 +29,6 @@ spike/decode_393.txt
 __pycache__/
 *.pyc
 
-# Session handoff notes — PLAN.md is the durable copy
-HANDOFF-PROMPT.md
-
 # Tauri's generated schemas
 app/src-tauri/gen/
 
@@ -39,12 +36,6 @@ app/src-tauri/gen/
 # Kept out of the repository on purpose: the point of the rewrite was to get
 # these off GitHub. Delete it once you are sure you do not want them back.
 .backup/
-
-# Working notes. Deliberately not in the repository: Kotha ships as a finished
-# product, and these are the workshop floor. Kept on disk, backed up in
-# .backup/.
-CLAUDE.md
-PLAN.md
 
 # Skills installed by `npx skills add`. Tooling, not product.
 .agents/
