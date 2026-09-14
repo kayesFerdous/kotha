@@ -43,8 +43,11 @@ if (window.__TAURI__) {
     return syllable * tremor * pause * 0.22 + Math.random() * 0.01;
   }
 
+  /* Rust meters the microphone whatever the pill is showing — the user may
+     talk straight through a decode — so the mock feeds `thinking` too. */
   setInterval(() => {
-    if (document.documentElement.dataset.state === "listening") push(fakeLevel());
+    const state = document.documentElement.dataset.state;
+    if (state === "listening" || state === "thinking") push(fakeLevel());
   }, 1000 / 30);
 
   /* The scripted loop, so the page is never just sitting there. Any keypress

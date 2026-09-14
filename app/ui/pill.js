@@ -9,11 +9,13 @@
    stand in for the entire backend in a browser tab.
 
      emit("kotha://state", "idle" | "listening" | "thinking" | "done")
-     emit("kotha://level", <number 0..1>)          // ~30 per second
+     emit("kotha://level", <number 0..1>)          // 30 per second, always
 
-   `level` is a plain RMS of the last audio frame, unshaped. All the curve
-   fitting that makes it look good lives in shape() below, so tuning the
-   waveform never means recompiling Rust.
+   `level` is a plain RMS of the last 1/30 s of audio, unshaped. All the
+   curve fitting that makes it look good lives in shape() below, so tuning the
+   waveform never means recompiling Rust. Levels keep coming in every state
+   the microphone is open for — `thinking` included, because the user may
+   still be talking while the model decodes what they said a moment ago.
 
    WHAT THIS FILE IS ALLOWED TO DO
    -------------------------------

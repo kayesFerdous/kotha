@@ -11,9 +11,10 @@
 
      idle       nothing on screen. The resting state.
      listening  the pill is up and the waveform follows the microphone.
-     thinking   audio is done, the model is decoding. The wave becomes a
-                self-driven travelling animation — no data behind it, so it
-                must not pretend to be data.
+     thinking   the model is decoding what was just said. The microphone
+                is still open, so the bars keep following the voice; a crest
+                travelling underneath, in the thinking colour, says the model
+                is at work. In a quiet room the crest is all that moves.
      done       text delivered. A tick, then it leaves.
 
    Transitions between states are CSS, not JavaScript. pill.js only ever sets
@@ -162,13 +163,27 @@ body {
    thinking — the model is decoding
    -------------------------------------------------------------------------- */
 
+/* The crest's height, 0..1. Registered so that it animates smoothly: an
+   unregistered custom property can only jump at the halfway keyframe. */
+@property --crest {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
 [data-state="thinking"] .bar {
   background: var(--thinking);
-  /* No history behind this state, so no oldest bar to fade. */
-  opacity: 1;
-  /* The height transition is a smoothing filter for live data. Here the
-     keyframes own the height, so it has to get out of the way. */
-  transition: background-color 200ms ease;
+  /* Each bar is as tall as the louder of two things: the voice, which is
+     still arriving because the microphone does not close while the model
+     decodes, and the crest travelling underneath. Talk during a decode and
+     the voice rides over the crest; stop and the crest is what moves.
+
+     This state used to replace the voice with the crest outright. Rust
+     decodes after every pause, so someone dictating continuously spent most
+     of their time looking at an animation that ignored them — and it began
+     exactly when they stopped talking, which read as the wave reacting late. */
+  height: calc(var(--bar-min) + (var(--bar-max) - var(--bar-min))
+               * max(var(--v, 0), var(--crest)));
   /* --i is the bar's index, set once by pill.js. A negative delay starts each
      bar further along the same cycle, which is what makes the crest travel. */
   animation: travel 1150ms ease-in-out infinite;
@@ -176,8 +191,8 @@ body {
 }
 
 @keyframes travel {
-  0%, 100% { height: var(--bar-min); }
-  50%      { height: calc(var(--bar-min) + (var(--bar-max) - var(--bar-min)) * 0.62); }
+  0%, 100% { --crest: 0; }
+  50%      { --crest: 0.45; }
 }
 
 /* --------------------------------------------------------------------------
@@ -222,8 +237,12 @@ body {
    dance. */
 @media (prefers-reduced-motion: reduce) {
   .pill { transition-duration: 1ms; transform: none !important; }
-  .bar { transition: none; animation: none; }
-  [data-state="thinking"] .bar { height: calc(var(--bar-min) * 2); }
+  /* `[data-state] .bar` as well as `.bar`: a media query adds no specificity,
+     so `.bar` alone lost to `[data-state="thinking"] .bar` above and the
+     crest kept travelling for exactly the people who asked it not to. */
+  .bar, [data-state] .bar { transition: none; animation: none; }
+  /* No travelling crest, so a still, slightly raised row stands in for it. */
+  [data-state="thinking"] .bar { --crest: 0.15; }
 }
 
 /* ==========================================================================
