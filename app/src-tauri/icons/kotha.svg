@@ -1,17 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- The pill's own waveform, standing in for the app. Same marks, same
-       dark capsule, so the tray icon and the thing on screen are obviously
-       the same object. -->
+  <!-- Kotha's mark: a Latin lowercase k wearing a Bengali matra.
+
+       The matra is the headline stroke that runs along the top of every
+       Bengali word and joins its letters into one line. Put it over a Latin
+       letterform and you have the app in one glyph: Bangla speech, English
+       words in Latin script, written as one thing. It is red because red is
+       the only colour in this app — the same #e61919 the pill's error state
+       and decode chase use.
+
+       Drawn as geometry, not set in a font. The smallest PNG cut from this is
+       32 px and the macOS menu bar slot is 18 pt; at that size a hinted glyph
+       is somebody else's rasteriser's opinion. The stem is a rect; the arm
+       and the leg are stroked diagonals. Their endpoints look wrong on
+       purpose: a butt cap is cut square to its OWN stroke, so a diagonal told
+       to stop at y=392 pokes about 20 px through the baseline. The endpoints
+       here are pulled back by half the stroke width times the stroke's
+       horizontal component, which lands the cap exactly on the line.
+
+       The plate is #18181b, not #000: a pure black icon reads as a hole in a
+       dark dock. The hairline keeps its edge when it sits on one anyway. -->
   <rect width="512" height="512" rx="114" fill="#18181b"/>
-  <rect x="1.5" y="1.5" width="509" height="509" rx="112.5" fill="none"
-        stroke="#ffffff" stroke-opacity="0.14" stroke-width="3"/>
-  <g fill="#ffffff">
-    <rect x="104" y="240" width="24" height="32"  rx="12"/>
-    <rect x="148" y="204" width="24" height="104" rx="12"/>
-    <rect x="192" y="152" width="24" height="208" rx="12"/>
-    <rect x="236" y="116" width="24" height="280" rx="12"/>
-    <rect x="280" y="172" width="24" height="168" rx="12"/>
-    <rect x="324" y="220" width="24" height="72"  rx="12"/>
-    <rect x="368" y="240" width="24" height="32"  rx="12"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="112.5"
+        fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="3"/>
+  <g transform="translate(-30.6 10.9) scale(1.0172)">
+    <rect x="200" y="160" width="52" height="232" fill="#f2f2f2"/>
+    <path d="M226.0 318 L354 252.7"
+          stroke="#f2f2f2" stroke-width="42" fill="none"/>
+    <path d="M226.0 318 L354 372.7"
+          stroke="#f2f2f2" stroke-width="42" fill="none"/>
+    <rect x="200" y="90" width="110" height="42" fill="#e61919"/>
   </g>
 </svg>
