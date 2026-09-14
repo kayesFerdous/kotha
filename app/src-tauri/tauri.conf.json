@@ -30,7 +30,8 @@
 
         "visible": false,
         "focus": false,
-        "acceptFirstMouse": false
+        "acceptFirstMouse": false,
+        "backgroundThrottling": "disabled"
       },
       {
         "label": "setup",

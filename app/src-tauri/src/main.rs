@@ -519,6 +519,17 @@ fn main() {
             pill.set_size(LogicalSize::new(PILL_WINDOW.0, PILL_WINDOW.1))?;
             no_activate(&pill);
 
+            // tauri.conf.json also sets `"backgroundThrottling": "disabled"`
+            // on this window, and JSON has nowhere to say why, so: WebKit's
+            // default for a web view whose window is off screen is to suspend
+            // its content process, and the pill is off screen between every
+            // dictation. Each one therefore began by waking a suspended page,
+            // and the first levels of the user's speech arrived while it
+            // woke. With throttling disabled the page stays live. It costs
+            // nothing while hidden — `pill.js` runs no timers, and mock.js
+            // stands down inside Tauri — and it is macOS 14+ only, which the
+            // M2 is. Linux and Windows ignore it.
+
             // NOTE: click-through is deliberately NOT set here. See the call
             // in `toggle`, and the bug note above it.
 
