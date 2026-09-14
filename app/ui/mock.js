@@ -9,9 +9,11 @@
    compile away, and a CSS change should not cost ten minutes. Anything you
    can see here is what you will get there.
 
-     space        cycle idle → listening → thinking → done
-     1 2 3 4      jump straight to a state
-     m            toggle between fake speech and silence while listening
+     space        cycle idle → listening → thinking → done → error
+     1 2 3 4 5    jump straight to a state
+     m            toggle between fake speech and silence while listening,
+                  which is the difference between a lit glyph and the five
+                  resting bars an armed, silent pill shows
 
    It also runs a scripted loop on load so the pill is doing something the
    moment the file opens.
@@ -40,7 +42,11 @@ if (window.__TAURI__) {
     const syllable = Math.max(0, Math.sin(t * 5.5) ** 2 - 0.08);
     const tremor = 0.75 + 0.25 * Math.sin(t * 21);
     const pause = t % 4.2 < 0.55 ? 0.06 : 1;      // breathe every few seconds
-    return syllable * tremor * pause * 0.22 + Math.random() * 0.01;
+    /* 0.09 peak RMS is about -21 dBFS, which is ordinary speech in the middle
+       of the range pill.js was calibrated against. It used to be 0.22 — a
+       shout — and the strip sat pinned at full depth, so the browser showed a
+       solid block where the app shows writing. */
+    return syllable * tremor * pause * 0.09 + Math.random() * 0.01;
   }
 
   /* Rust meters the microphone whatever the pill is showing — the user may
@@ -56,7 +62,11 @@ if (window.__TAURI__) {
   const script = [
     ["listening", 4200],
     ["thinking", 2400],
-    ["done", 1600],
+    ["done", 1400],
+    ["idle", 700],
+    // The failure is in the loop because it is a state someone has to be able
+    // to look at, and it is the one state a browser cannot provoke for real.
+    ["error", 2600],
     ["idle", 900],
   ];
   (function run(i = 0) {
@@ -72,7 +82,7 @@ if (window.__TAURI__) {
     if (e.key === " ") {
       e.preventDefault();
       setState(STATES[(at + 1) % STATES.length]);
-    } else if (["1", "2", "3", "4"].includes(e.key)) {
+    } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
       setState(STATES[Number(e.key) - 1]);
     } else if (e.key.toLowerCase() === "m") {
       speaking = !speaking;

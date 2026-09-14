@@ -1,75 +1,120 @@
 /* ==========================================================================
    Kotha — the pill, all of its looks.
 
+   THE IDEA
+   --------
+   Five bars of light in a row, tapering out from the middle. They never move
+   and they never resize. Everything this pill has to say — the microphone is
+   open, you are talking, the model is working, the text landed, it failed —
+   is said by changing how brightly they burn and what colour they burn in.
+
+   That constraint is the whole design. A waveform sat here before: thirty
+   cells scrolling right to left, each one a real measurement. It was honest
+   and it was far too much to have flickering at the bottom of the screen
+   while someone is trying to think of what to say next. Motion draws the eye
+   and then holds it. Light you can read out of the corner of an eye.
+
+   So: nothing in this file animates position or size, with one exception —
+   the capsule itself grows out of a horizontal line when it arrives and falls
+   back into one when it leaves. That is the only movement in the app.
+
    HOW TO CHANGE THINGS
    --------------------
-   Almost everything is a token in the :root block below. Change a number
-   there and the whole pill follows — bar count included, because pill.js
-   reads --bar-count and generates that many.
+   Almost everything is a token in the :root block below. The glyph's own
+   proportions are --seg-* ; the light's behaviour is --rest and --bloom. The
+   capsule has no width token: it is sized by the glyph inside it, so no token
+   can leave it cramped or half empty.
 
-   Below the tokens are four state blocks, one per `data-state` on <html>:
+   Below the tokens are the state blocks, one per `data-state` on <html>:
 
      idle       nothing on screen. The resting state.
-     listening  the pill is up and the waveform follows the microphone.
-     thinking   the model is decoding what was just said. The microphone
-                is still open, so the bars keep following the voice; a crest
-                travelling underneath, in the thinking colour, says the model
-                is at work. In a quiet room the crest is all that moves.
-     done       text delivered. A tick, then it leaves.
+     listening  the glyph is lit and following the voice. It fills from the
+                middle outward: a quiet room leaves five bars resting at
+                --rest, which is what "armed" looks like, and there is no
+                separate armed state to emit or maintain.
+     thinking   the model is decoding what was just said. The bars drop to the
+                dim ink and keep following the voice — the microphone does not
+                close while the model works — and a red chase runs across
+                them. In a quiet room the chase is all that moves.
+     done       text delivered. Every bar to full white at once, a beat, and
+                the capsule collapses into the line it grew from.
+     error      the dictation failed. The row goes red and the middle bar goes
+                out, so the line is visibly broken, and the capsule is knocked
+                off level. No words: see the error block for why.
 
    Transitions between states are CSS, not JavaScript. pill.js only ever sets
-   the attribute; it never animates anything. Four states, CSS only — and it
-   is worth keeping that way: an agent can
-   restyle every transition here without reading a line of JS.
+   the attribute and writes one number per bar. So an agent can restyle every
+   transition here without reading a line of JS.
 
    The pill is dark in every OS theme, deliberately. It floats over whatever
-   the user happens to be looking at, so it is furniture, not a document —
-   the same choice Wispr Flow makes. There is no light variant to maintain.
+   the user happens to be looking at, so it is furniture, not a document.
+   There is no light variant to maintain.
    ========================================================================== */
 
 :root {
-  /* --- the capsule ------------------------------------------------------ */
-  /* No width token: the capsule is sized by its padding and the waveform
-     inside it, so changing --bar-count or --bar-gap cannot leave it cramped
-     or half empty. One fewer number to keep in sync. */
-  --pill-h: 44px;
-  --pill-radius: 999px;
+  /* --- ink -------------------------------------------------------------- */
   /* Nearly opaque on purpose. A Tauri window is transparent, and
      backdrop-filter has nothing to sample through it — it blurs page content,
      not the desktop behind the window. So the frosted look is a bonus where
      the platform provides real vibrancy (macOS NSVisualEffectView, KWin blur)
-     and must never be what makes the pill legible. At 0.92 the capsule reads
-     against a white page and a black one alike. */
-  --pill-bg: rgba(24, 24, 27, 0.92);
-  --pill-blur: 24px;
+     and must never be what makes the pill legible. At 0.94 the capsule reads
+     against a white page and a black one alike. --ink-solid is the same
+     colour for the setup window, which sits on an ordinary opaque window and
+     would composite the alpha against white.
+
+     Not pure black: a capsule at #000 reads as a hole punched in the desktop,
+     and on an OLED panel it disappears into one. */
+  --ink: rgba(11, 11, 12, 0.94);
+  --ink-solid: #0b0b0c;
   /* Carries the whole edge over a dark background, where the fill cannot. */
-  --pill-border: rgba(255, 255, 255, 0.14);
+  --edge: rgba(255, 255, 255, 0.16);
+  --blur: 20px;
+
+  /* --- light ------------------------------------------------------------ */
+  --line: #f2f2f2;             /* the glyph, lit */
+  --line-dim: rgba(242, 242, 242, 0.34);   /* the glyph while decoding */
+  --alert: #e61919;            /* the only colour in the app */
+  /* What a bar sits at with no voice on it. Low enough that speech is
+     obviously brighter, high enough that five dim bars still read as a mark
+     somebody designed rather than as a pill that failed to draw. */
+  --rest: 0.16;
+  /* How far a fully lit bar throws light. This is the difference between a
+     painted bar and a lit one, and it is most of why the thing reads as a
+     glyph. Set it to 0 and the design dies. */
+  --bloom: 12px;
+  /* How fast a bar reaches its new brightness. Two frames at 30 fps: long
+     enough to smooth the stream, short enough to still feel live. */
+  --ease: 90ms;
+
+  /* --- the glyph -------------------------------------------------------- */
+  /* Five bars, tapering out from the middle. The taper is the mark: five
+     equal bars would be a meter, and a meter is what this replaced. */
+  --seg-h: 4px;
+  --seg-gap: 6px;
+  --seg-1: 12px;               /* the outer pair */
+  --seg-2: 20px;               /* the inner pair */
+  --seg-3: 32px;               /* the middle, which is lit first and last */
+
+  /* --- the capsule ------------------------------------------------------ */
+  /* --pad-x is wider than it looks like it needs to be, and that is the
+     rounding's fault: at a full capsule radius the left and right ends curve
+     away for most of the capsule's height, so a bar drawn any closer to them
+     would appear to run off the edge. */
+  --pad-x: 24px;
+  --pad-y: 15px;
+  /* A capsule. Anything less than half the height leaves a flat spot on the
+     ends, and the flat spot is the thing that makes it read as a box. */
+  --corner: 999px;
   /* Two shadows: a wide soft one to lift it off the desktop, a tight dark one
-     to keep the edge crisp against a light background. */
-  --pill-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35);
-  --pill-inset: inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  --pill-gap: 20px;      /* space between the capsule edge and the waveform */
-
-  /* --- the waveform ----------------------------------------------------- */
-  --bar-count: 21;       /* pill.js reads this. One place to change it. */
-  --bar-w: 3px;
-  --bar-gap: 4px;
-  --bar-radius: 2px;
-  --bar-min: 3px;        /* a resting row of dots, never a blank pill */
-  --bar-max: 22px;       /* leaves air above and below at full volume */
-  --bar-fade: 0.30;      /* opacity of the oldest bar, at the left edge */
-  --bar-color: rgba(255, 255, 255, 0.94);
-  /* How fast a bar moves to its new height. One or two frames at 30 fps:
-     long enough to smooth the stream, short enough to still feel live. */
-  --bar-ease: 70ms;
-
-  /* --- state colours ---------------------------------------------------- */
-  --thinking: #8b9bff;
-  --done: #4ade80;
+     to keep the edge crisp against a light background. Total spread stays
+     well inside PILL_WINDOW in main.rs — a shadow clipped by the window edge
+     is worse than no shadow. */
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.48), 0 1px 4px rgba(0, 0, 0, 0.4);
 
   /* --- motion ----------------------------------------------------------- */
-  --in: 260ms cubic-bezier(0.16, 1.02, 0.3, 1.14);   /* a touch of overshoot */
-  --out: 180ms cubic-bezier(0.4, 0, 0.9, 0.4);
+  --in: 190ms cubic-bezier(0.2, 0.9, 0.2, 1);    /* fast, no overshoot */
+  --out: 150ms cubic-bezier(0.5, 0, 0.9, 0.3);
+  --chase: 1000ms;             /* one pass of the decode chase */
 }
 
 /* Transparent all the way down: on Tauri the window itself is transparent, so
@@ -100,7 +145,11 @@ body {
 
 /* --------------------------------------------------------------------------
    The capsule
-   -------------------------------------------------------------------------- */
+   --------------------------------------------------------------------------
+   Hidden pose is a horizontal line: scaled to nothing on Y, so the glyph
+   squashes into that line with it. Opening is the line growing into a
+   capsule, closing is the capsule falling back into the line. One gesture,
+   both ways, and it costs one property. */
 
 .pill {
   position: relative;
@@ -108,116 +157,157 @@ body {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  height: var(--pill-h);
-  padding: 0 var(--pill-gap);
-  border: 1px solid var(--pill-border);
-  border-radius: var(--pill-radius);
-  background: var(--pill-bg);
-  backdrop-filter: blur(var(--pill-blur)) saturate(180%);
-  -webkit-backdrop-filter: blur(var(--pill-blur)) saturate(180%);
-  box-shadow: var(--pill-shadow), var(--pill-inset);
+  padding: var(--pad-y) var(--pad-x);
+  border: 1px solid var(--edge);
+  border-radius: var(--corner);
+  background: var(--ink);
+  backdrop-filter: blur(var(--blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(150%);
+  box-shadow: var(--shadow);
 
-  /* Hidden pose. Every state below overrides these three. */
   opacity: 0;
-  transform: translateY(10px) scale(0.88);
+  transform: scaleY(0.08);
   transition: opacity var(--out), transform var(--out);
   will-change: opacity, transform;
 }
 
 [data-state="listening"] .pill,
 [data-state="thinking"] .pill,
-[data-state="done"] .pill {
+[data-state="done"] .pill,
+[data-state="error"] .pill {
   opacity: 1;
-  transform: translateY(0) scale(1);
+  transform: scaleY(1);
   transition: opacity var(--in), transform var(--in);
 }
 
 /* --------------------------------------------------------------------------
-   The waveform
+   The glyph
    -------------------------------------------------------------------------- */
 
-.wave {
+.glyph {
   display: flex;
   align-items: center;
-  gap: var(--bar-gap);
-  height: var(--bar-max);
-  transition: opacity 140ms ease, transform 200ms ease;
+  gap: var(--seg-gap);
 }
 
-.bar {
-  width: var(--bar-w);
-  /* --v is 0..1, written by pill.js thirty times a second — the only property
-     JavaScript ever touches. */
-  height: calc(var(--bar-min) + (var(--bar-max) - var(--bar-min)) * var(--v, 0));
-  border-radius: var(--bar-radius);
-  background: var(--bar-color);
-  /* The history scrolls right to left, so the left edge is the oldest sample.
-     Fading it out stops the wave ending in a hard vertical cut and makes the
-     motion read as flow rather than as a row of meters. */
-  opacity: calc(var(--bar-fade)
-                + (1 - var(--bar-fade)) * (var(--i) + 1) / var(--bar-count));
-  transition: height var(--bar-ease) linear, background-color 200ms ease;
+.seg {
+  position: relative;
+  height: var(--seg-h);
+  border-radius: 999px;
+  background: var(--line);
+  /* --b is 0..1, written by pill.js thirty times a second — the only property
+     JavaScript ever touches. Nothing else in this file reads the microphone,
+     and nothing else needs to. */
+  opacity: calc(var(--rest) + (1 - var(--rest)) * var(--b, 0));
+  /* The bloom is what makes a bar read as lit rather than painted, and it has
+     to scale with --b or a quiet room glows as hard as a shout. Alpha rides
+     the same number so that an unlit bar throws nothing at all. */
+  box-shadow: 0 0 calc(var(--b, 0) * var(--bloom))
+              rgb(255 255 255 / calc(var(--b, 0) * 0.5));
+  transition: opacity var(--ease) linear,
+              box-shadow var(--ease) linear,
+              background-color 200ms ease;
+}
+
+/* The drawn shape. Symmetric about the middle, so the pairs share a width. */
+.seg:nth-child(1), .seg:nth-child(5) { width: var(--seg-1); }
+.seg:nth-child(2), .seg:nth-child(4) { width: var(--seg-2); }
+.seg:nth-child(3)                    { width: var(--seg-3); }
+
+/* The red layer. It sits exactly on top of its bar and is invisible until a
+   state has something to say in red, which keeps the glyph one object rather
+   than two stacked ones that can fall out of alignment. */
+.seg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--alert);
+  opacity: 0;
 }
 
 /* --------------------------------------------------------------------------
    thinking — the model is decoding
-   -------------------------------------------------------------------------- */
+   --------------------------------------------------------------------------
+   The bars drop to the dim ink but keep following the voice, because the
+   microphone does not close while the model decodes: Rust decodes after every
+   pause, so someone dictating continuously would otherwise spend the bulk of
+   their time looking at an animation that ignored them.
 
-/* The crest's height, 0..1. Registered so that it animates smoothly: an
-   unregistered custom property can only jump at the halfway keyframe. */
-@property --crest {
-  syntax: "<number>";
-  inherits: false;
-  initial-value: 0;
+   The chase runs left to right across the five bars, one pass a second. Five
+   bars at 200 ms apart is slow enough to read as a deliberate sweep rather
+   than a flicker — that pacing is doing as much work here as the colour. */
+
+[data-state="thinking"] .seg { background: var(--line-dim); }
+
+[data-state="thinking"] .seg::after {
+  animation: chase var(--chase) linear infinite;
 }
+[data-state="thinking"] .seg:nth-child(1)::after { animation-delay: 0ms; }
+[data-state="thinking"] .seg:nth-child(2)::after { animation-delay: 200ms; }
+[data-state="thinking"] .seg:nth-child(3)::after { animation-delay: 400ms; }
+[data-state="thinking"] .seg:nth-child(4)::after { animation-delay: 600ms; }
+[data-state="thinking"] .seg:nth-child(5)::after { animation-delay: 800ms; }
 
-[data-state="thinking"] .bar {
-  background: var(--thinking);
-  /* Each bar is as tall as the louder of two things: the voice, which is
-     still arriving because the microphone does not close while the model
-     decodes, and the crest travelling underneath. Talk during a decode and
-     the voice rides over the crest; stop and the crest is what moves.
-
-     This state used to replace the voice with the crest outright. Rust
-     decodes after every pause, so someone dictating continuously spent most
-     of their time looking at an animation that ignored them — and it began
-     exactly when they stopped talking, which read as the wave reacting late. */
-  height: calc(var(--bar-min) + (var(--bar-max) - var(--bar-min))
-               * max(var(--v, 0), var(--crest)));
-  /* --i is the bar's index, set once by pill.js. A negative delay starts each
-     bar further along the same cycle, which is what makes the crest travel. */
-  animation: travel 1150ms ease-in-out infinite;
-  animation-delay: calc(var(--i) * -55ms);
-}
-
-@keyframes travel {
-  0%, 100% { --crest: 0; }
-  50%      { --crest: 0.45; }
+@keyframes chase {
+  0%   { opacity: 0;   box-shadow: 0 0 0 rgb(230 25 25 / 0); }
+  10%  { opacity: 1;   box-shadow: 0 0 var(--bloom) rgb(230 25 25 / 0.55); }
+  34%  { opacity: 0;   box-shadow: 0 0 0 rgb(230 25 25 / 0); }
+  100% { opacity: 0;   box-shadow: 0 0 0 rgb(230 25 25 / 0); }
 }
 
 /* --------------------------------------------------------------------------
    done — text is at the cursor
-   -------------------------------------------------------------------------- */
+   --------------------------------------------------------------------------
+   Every bar to full at once. It is the only moment the glyph is evenly lit —
+   the voice never lights it evenly, because the voice always lights the
+   middle harder — so a flat row of five reads unmistakably as "finished", at
+   a glance, without a tick or a second colour. */
 
-.tick {
-  position: absolute;
-  width: 20px;
-  height: 20px;
-  color: var(--done);
-  opacity: 0;
-  transform: scale(0.6);
-  transition: opacity 120ms ease, transform 220ms cubic-bezier(0.16, 1.02, 0.3, 1.3);
-}
-
-[data-state="done"] .wave {
-  opacity: 0;
-  transform: scale(0.85);
-}
-
-[data-state="done"] .tick {
+[data-state="done"] .seg {
+  background: var(--line);
   opacity: 1;
-  transform: scale(1);
+  box-shadow: 0 0 var(--bloom) rgb(255 255 255 / 0.55);
+  transition: opacity 120ms ease, box-shadow 140ms ease;
 }
+
+/* --------------------------------------------------------------------------
+   error — the dictation failed
+   --------------------------------------------------------------------------
+   The row goes red and the middle bar goes out. Every other state in this
+   pill lights the middle first and hardest, so the middle going dark is the
+   one thing the design can do that cannot be mistaken for any of them — and
+   it leaves a gap in the line, which is what a break looks like.
+
+   The capsule itself does not move. It was tilted here for a while, to catch
+   an eye that was not on it, and it was the only thing in the app that broke
+   the horizontal — which is precisely why it drew attention, and also why it
+   looked like a bug. Red and a hole in the middle are enough; `thinking` is
+   the only other state with red in it and that one is dim, white-based and
+   moving, so the two cannot be confused.
+
+   No caption, deliberately. A dictation failure has nothing useful to tell
+   the user — they already know what to do, which is say it again — and a line
+   of text in a 36px overlay is something to read at exactly the moment they
+   were trying not to look at the screen. The words are still there for anyone
+   who needs them: `.sr` carries "Dictation failed" to a screen reader, and
+   the actual cause is on stderr. */
+
+[data-state="error"] .seg {
+  opacity: 1;
+  box-shadow: none;
+  transition: opacity 140ms ease;
+}
+
+[data-state="error"] .seg::after {
+  opacity: 1;
+  box-shadow: 0 0 var(--bloom) rgb(230 25 25 / 0.5);
+  transition: opacity 140ms ease;
+}
+
+/* The break. */
+[data-state="error"] .seg:nth-child(3) { opacity: 0.09; }
+[data-state="error"] .seg:nth-child(3)::after { opacity: 0; box-shadow: none; }
 
 /* --------------------------------------------------------------------------
    Accessibility
@@ -232,17 +322,20 @@ body {
   white-space: nowrap;
 }
 
-/* The waveform is decoration; the pill appearing at all is the information.
-   Someone who has asked for less motion still gets both states, without the
-   dance. */
+/* The glyph is decoration; the pill appearing at all is the information.
+   Someone who has asked for less motion still gets every state, without the
+   dance — including the capsule, which arrives at full height instead of
+   growing out of the line. */
 @media (prefers-reduced-motion: reduce) {
   .pill { transition-duration: 1ms; transform: none !important; }
-  /* `[data-state] .bar` as well as `.bar`: a media query adds no specificity,
-     so `.bar` alone lost to `[data-state="thinking"] .bar` above and the
-     crest kept travelling for exactly the people who asked it not to. */
-  .bar, [data-state] .bar { transition: none; animation: none; }
-  /* No travelling crest, so a still, slightly raised row stands in for it. */
-  [data-state="thinking"] .bar { --crest: 0.15; }
+  /* `[data-state] .seg` as well as `.seg`: a media query adds no specificity,
+     so `.seg` alone loses to `[data-state="done"] .seg` above and the
+     brightness keeps sliding for exactly the people who asked it not to. */
+  .seg, [data-state] .seg,
+  .seg::after, [data-state] .seg::after { transition: none; animation: none; }
+  /* No chase, so a steady dim red row stands in for it. It cannot be confused
+     with `error`, which is full red with the middle bar out. */
+  [data-state="thinking"] .seg::after { opacity: 0.4; }
 }
 
 /* ==========================================================================
@@ -265,7 +358,7 @@ body.setup {
   box-sizing: border-box;
   height: 100%;
   overflow: auto;
-  background: #18181b;
+  background: var(--ink-solid);
   color: rgba(255, 255, 255, 0.92);
   font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -283,8 +376,8 @@ body.setup p {
 
 body.setup kbd {
   padding: 2px 6px;
-  border: 1px solid var(--pill-border);
-  border-radius: 5px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
   background: rgba(255, 255, 255, 0.07);
   font: inherit;
   font-size: 12px;
@@ -295,9 +388,9 @@ body.setup kbd {
 body.setup button {
   padding: 9px 18px;
   border: 0;
-  border-radius: 8px;
-  background: var(--bar-color);
-  color: #18181b;
+  border-radius: 999px;
+  background: var(--line);
+  color: var(--ink-solid);
   font: 600 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
   cursor: pointer;
 }
@@ -307,10 +400,10 @@ body.setup button:disabled { opacity: 0.4; cursor: default; }
 
 /* The progress meter. `--p` is 0..1 and setup.js writes nothing else.
 
-   Called `.meter` and not `.bar` because `.bar` is already taken, twenty-one
-   times over, by the waveform above — and an unscoped `.bar` here silently
-   restyled those too. Everything in this section is scoped under `body.setup`
-   for the same reason: one stylesheet, two windows, one namespace. */
+   Called `.meter` and not `.seg` because `.seg` is already taken, five times
+   over, by the glyph above — and an unscoped `.seg` here silently restyled
+   those too. Everything in this section is scoped under `body.setup` for the
+   same reason: one stylesheet, two windows, one namespace. */
 body.setup .meter {
   height: 6px;
   margin-bottom: 10px;
@@ -325,12 +418,12 @@ body.setup .meter::after {
   height: 100%;
   width: calc(var(--p, 0) * 100%);
   border-radius: inherit;
-  background: var(--thinking);
+  background: var(--line);
   transition: width 200ms linear;
 }
 
 body.setup .note { font-size: 13px; color: rgba(255, 255, 255, 0.5); }
-body.setup .note.bad { color: #f87171; }
+body.setup .note.bad { color: var(--alert); }
 
 /* Three phases, one attribute on <body>, same idea as the pill's data-state:
    what is on screen is a CSS question, and setup.js only ever names the

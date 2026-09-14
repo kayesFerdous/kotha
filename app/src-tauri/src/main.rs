@@ -397,7 +397,7 @@ fn sha256(path: &Path) -> anyhow::Result<String> {
 /// which time the pill has already appeared in the wrong place.
 ///
 /// It has to stay comfortably larger than the capsule in pill.css: the pill is
-/// about 187×44 today, and its shadow spreads 40 px. Bigger than that is only
+/// about 170×36 today, and its shadow spreads 32 px. Bigger than that is only
 /// more transparent surface for the compositor to blend every frame.
 const PILL_WINDOW: (f64, f64) = (320.0, 120.0);
 
@@ -425,6 +425,10 @@ fn bottom_margin() -> f64 {
 /// hiding a window nothing can see costs nothing but a few frames of
 /// compositing. If the pill ever vanishes mid-tick, this is why.
 const HIDE_AFTER: Duration = Duration::from_millis(1900);
+
+/// How long the pill stays up saying a dictation failed. Longer than
+/// `HIDE_AFTER` because this one has words on it that have to be read.
+const ERROR_SHOWN: Duration = Duration::from_millis(2500);
 
 /// How often the worker checks whether the user has asked it to stop.
 const POLL: Duration = Duration::from_millis(200);
@@ -721,10 +725,17 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
         if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
             // Never leave the pill up on a failure: the user pressed a key and
             // deserves to be told, not to be left looking at a frozen pill.
+            // Telling them is the `error` state — going straight to `idle`
+            // here made the pill vanish without a word, which looks exactly
+            // like the hotkey not having registered. The message is in the
+            // pill rather than only on stderr because nobody running the
+            // bundled app is watching stderr.
             eprintln!("dictation failed: {e:#}");
             app.state::<Session>().listening.store(false, Ordering::SeqCst);
-            let _ = app.emit("kotha://state", "idle");
-            hide_soon(&app, Duration::ZERO);
+            let _ = app.emit("kotha://state", "error");
+            // Must outlast DWELL.error in pill.js, or the window is pulled
+            // out from under the message while it is still being read.
+            hide_soon(&app, ERROR_SHOWN);
         }
     }
 }

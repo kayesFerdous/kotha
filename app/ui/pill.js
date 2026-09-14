@@ -8,58 +8,65 @@
    replaceable without touching a line of the app, and it is why mock.js can
    stand in for the entire backend in a browser tab.
 
-     emit("kotha://state", "idle" | "listening" | "thinking" | "done")
+     emit("kotha://state", "idle" | "listening" | "thinking" | "done" | "error")
      emit("kotha://level", <number 0..1>)          // 30 per second, always
 
    `level` is a plain RMS of the last 1/30 s of audio, unshaped. All the
-   curve fitting that makes it look good lives in shape() below, so tuning the
-   waveform never means recompiling Rust. Levels keep coming in every state
-   the microphone is open for — `thinking` included, because the user may
-   still be talking while the model decodes what they said a moment ago.
+   curve fitting that makes it look good lives in shape() and push() below,
+   so tuning the glyph never means recompiling Rust. Levels keep coming in
+   every state the microphone is open for — `thinking` included, because the
+   user may still be talking while the model decodes what they said a moment
+   ago.
+
+   There is no "armed" and no "paused" state, and there should not be: a live
+   microphone in a silent room leaves five bars resting at --rest, which
+   already says both. Rust would have to guess a threshold to send them, and
+   the UI already has the number that threshold would be guessed from.
 
    WHAT THIS FILE IS ALLOWED TO DO
    -------------------------------
-   Set `data-state` on <html>, and write `--v` on each bar. That is all. Every
-   transition, colour and easing is in pill.css, so a visual change is a CSS
-   change. If you find yourself animating from here, put it back in the
-   stylesheet.
+   Set `data-state` on <html>, and write `--b` on each of the five bars. That
+   is all. Every transition, colour and easing is in pill.css, so a visual
+   change is a CSS change. If you find yourself animating from here, put it
+   back in the stylesheet.
 
    THE ONE PIECE OF STATE THE UI OWNS
    ----------------------------------
-   How long the tick stays up after `done` before the pill leaves. That is
+   How long `done` and `error` stay up before the pill leaves. That is
    presentation timing, not application state, so Rust does not send an `idle`
-   after a `done` — see DONE_DWELL.
+   after either — see DWELL.
    ========================================================================== */
 
-const STATES = ["idle", "listening", "thinking", "done"];
+const STATES = ["idle", "listening", "thinking", "done", "error"];
 
-/** How long the tick lingers before the pill fades out, in ms. */
-const DONE_DWELL = 1100;
+/** How long a terminal state lingers before the capsule collapses, in ms.
+    `error` holds longer because a broken glyph is a thing to notice, and the
+    user may not have been looking at the pill when it broke. */
+const DWELL = { done: 900, error: 2200 };
 
-/* Waveform shaping. These numbers are the whole feel of the thing.
+/* Level shaping. These numbers are the whole feel of the thing.
 
    The level arrives as linear RMS, and loudness is heard in decibels, so that
    is the scale it is drawn on. Measured through the M2's built-in microphone,
    2026-09-14, in the same 33 ms windows Rust sends: a quiet room sits at -46
    to -42 dBFS and never rose above -38; ordinary speech is roughly -35 to
-   -15. The curve this replaces (RMS × 3.6, to the power 0.85) drew -30 dBFS
-   at 16% of a bar — about two pixels — so the wave looked dead while the user
-   talked, and the first obvious motion was the `thinking` animation after
-   they stopped.
+   -15. A curve without this calibration put -30 dBFS at 16% of full — so the
+   glyph looked dead while the user talked, and the first obvious motion was
+   the decode chase after they stopped.
 
-   QUIET         dBFS drawn as a resting dot. Just above that room's loudest
+   QUIET         dBFS drawn as an unlit glyph. Just above that room's loudest
                  silence, so an empty room does not twitch.
-   LOUD          dBFS drawn at full height. Raised speech reaches it; ordinary
-                 speech lands around half to three quarters.
+   LOUD          dBFS drawn at full brightness. Raised speech reaches it;
+                 ordinary speech lands around half to three quarters.
    FLOOR_*       The quiet end follows the room. A fan or a café lifts the
                  floor by FLOOR_RISE dB a frame (1 dB a second), and anything
                  quieter pulls it straight back down, which the gaps between
                  syllables do all the time. FLOOR_MAX stops a long loud
                  sentence dragging the floor up into the speech itself.
-   RELEASE       How much of the previous height survives into the next
+   RELEASE       How much of the previous brightness survives into the next
                  frame. This is what turns thirty discrete samples a second
-                 into a wave that falls away instead of flickering. Attack is
-                 instant: a syllable hits its full height on the frame it
+                 into a light that falls away instead of strobing. Attack is
+                 instant: a syllable hits full brightness on the frame it
                  arrives, and anything slower reads as lag. */
 const QUIET = -40;
 const LOUD = -12;
@@ -68,29 +75,29 @@ const FLOOR_MARGIN = 4;
 const FLOOR_MAX = -30;
 const RELEASE = 0.80;
 
+/* How the one level number becomes five brightnesses.
+
+   The glyph fills from the middle outward, so each bar is offset by how far
+   it sits from the centre: the middle one starts lighting immediately, the
+   inner pair once the voice is past REACH, the outer pair past two REACH.
+   RAMP is how much louder again it takes that bar to reach full.
+
+   Why outward from the middle, rather than left to right: left to right is a
+   meter, and a meter invites you to read a value off it. This is not a
+   measurement anyone needs — it exists so the user can tell at a glance that
+   the microphone is hearing them. Symmetry has no scale to read, so the eye
+   takes it in and lets go. It also keeps the decode chase, which does run
+   left to right, unmistakably a different thing. */
+const DISTANCE = [2, 1, 0, 1, 2];
+const REACH = 0.26;
+const RAMP = 0.34;
+
 const root = document.documentElement;
-const wave = document.querySelector(".wave");
+const segs = [...document.querySelectorAll(".seg")];
 const label = document.querySelector(".sr");
 
-/* Bars are generated rather than written into the HTML so that --bar-count in
-   pill.css stays the single place the number lives. */
-const count = Number(getComputedStyle(root).getPropertyValue("--bar-count")) || 21;
-const bars = Array.from({ length: count }, (_, i) => {
-  const el = document.createElement("span");
-  el.className = "bar";
-  el.style.setProperty("--i", i);   // used by the `thinking` keyframe delay
-  el.style.setProperty("--v", 0);
-  wave.append(el);
-  return el;
-});
-
-/* The waveform is a scrolling history, not a spectrum: index 0 is the oldest
-   sample and the newest enters at the right. Every bar is a real measurement
-   that really happened, which is the only reason it is honest to draw twenty
-   one of them from a single number per frame. */
-const history = new Array(count).fill(0);
 let held = 0;
-let doneTimer = null;
+let dwellTimer = null;
 /* The room's noise, in dBFS. Lives for the life of the page, so a second
    dictation in the same room starts already adapted. */
 let floor = QUIET - FLOOR_MARGIN;
@@ -103,21 +110,21 @@ function shape(level) {
   return Math.min(1, Math.max(0, (db - quiet) / (LOUD - quiet)));
 }
 
-/** One microphone frame. Called ~30 times a second while listening. */
+/** One microphone frame. Called ~30 times a second while the mic is open. */
 function push(level) {
   const v = shape(level);
-  // Fast attack, slow release: jump straight up, ease back down.
+  // Fast attack, slow release: jump straight to full, ease back down.
   held = v > held ? v : held * RELEASE + v * (1 - RELEASE);
 
-  history.shift();
-  history.push(held);
-  for (let i = 0; i < count; i++) bars[i].style.setProperty("--v", history[i].toFixed(3));
+  for (let i = 0; i < segs.length; i++) {
+    const b = (held - DISTANCE[i] * REACH) / RAMP;
+    segs[i].style.setProperty("--b", Math.min(1, Math.max(0, b)).toFixed(3));
+  }
 }
 
 function drain() {
-  history.fill(0);
   held = 0;
-  for (const b of bars) b.style.setProperty("--v", 0);
+  for (const s of segs) s.style.setProperty("--b", 0);
 }
 
 function setState(next) {
@@ -125,21 +132,25 @@ function setState(next) {
     console.warn(`kotha: unknown state ${next}`);
     return;
   }
-  clearTimeout(doneTimer);
+  clearTimeout(dwellTimer);
   const prev = root.dataset.state;
   root.dataset.state = next;
-  label.textContent =
-    { idle: "", listening: "Listening", thinking: "Transcribing", done: "Done" }[next];
+  label.textContent = {
+    idle: "",
+    listening: "Listening",
+    thinking: "Transcribing",
+    done: "Done",
+    error: "Dictation failed",
+  }[next];
 
-  /* A new dictation starts from a flat line. Coming back from `thinking` is
-     not a new dictation — the model was decoding one sentence while the user
-     spoke the next, and levels kept arriving the whole time (Rust emits them
-     from the microphone, not from the decode loop). Wiping the history here
-     would throw away the last two thirds of a second of real speech and make
-     the wave jump from a flat line to full height. */
+  /* A new dictation starts dark. Coming back from `thinking` is not a new
+     dictation — the model was decoding one sentence while the user spoke the
+     next, and levels kept arriving the whole time (Rust emits them from the
+     microphone, not from the decode loop). Resetting the release envelope
+     here would blink the glyph off in the middle of a word. */
   if (next === "listening" && prev !== "thinking") drain();
-  // The pill leaves on its own after a `done`; Rust does not have to say so.
-  if (next === "done") doneTimer = setTimeout(() => setState("idle"), DONE_DWELL);
+  // The pill leaves on its own after a terminal state; Rust need not say so.
+  if (DWELL[next]) dwellTimer = setTimeout(() => setState("idle"), DWELL[next]);
 }
 
 /* --------------------------------------------------------------------------
