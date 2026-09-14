@@ -58,7 +58,7 @@ use kotha_spike::correct::Corrector;
 use kotha_spike::live::{self, Microphone, Output, Segmenter};
 use kotha_spike::{suspicious_fusion, Engine};
 
-use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -327,6 +327,136 @@ fn hotkey_label(app: AppHandle) -> Option<String> {
     app.global_shortcut().is_registered(k.as_str()).then_some(k)
 }
 
+/// Bring up the settings window, focused.
+///
+/// Like `show_setup`, and unlike the pill: it has controls on it, so it is
+/// meant to take focus. Shown rather than built here — it is declared in
+/// `tauri.conf.json` with `"visible": false`, so a page that has already been
+/// opened once comes back instantly and with its scroll position intact.
+fn show_settings(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("settings") else {
+        eprintln!("no window labelled `settings` — check tauri.conf.json");
+        return;
+    };
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+}
+
+/// Everything the settings window draws itself from, in one call.
+///
+/// One command and not one per setting, because the window renders all of it at
+/// once and a half-populated page is a worse thing to have than a slightly
+/// wider payload. The *option lists* travel with the values for the same reason
+/// the tray submenus were built from the same constants: a hard-coded list in
+/// the HTML is a list that drifts from what the app will accept.
+///
+/// `hotkey_bound` is asked of the shortcut plugin rather than assumed. A key
+/// another application already owns is saved and not registered, and a window
+/// that shows it ticked without saying so is a window that lies about the one
+/// thing the user came to fix.
+#[tauri::command]
+fn settings_get(app: AppHandle) -> serde_json::Value {
+    let path = settings_path(&app);
+    let bound = hotkey(&app);
+
+    // The offered list, plus whatever is actually bound if someone wrote a
+    // fifth thing into settings.json by hand. Hiding a setting the app is
+    // obeying is how support tickets start.
+    let hotkeys: Vec<String> = HOTKEYS
+        .iter()
+        .map(|k| k.to_string())
+        .chain((!HOTKEYS.contains(&bound.as_str())).then(|| bound.clone()))
+        .collect();
+
+    serde_json::json!({
+        "hotkey": bound,
+        "hotkeys": hotkeys,
+        "hotkeyBound": app.global_shortcut().is_registered(bound.as_str()),
+
+        "paste": paste_setting(&app),
+        "pasteModes": PASTE_MODES,
+        // When the environment forced it, the window shows what was forced and
+        // disables the controls, rather than offering a click with no effect.
+        "pasteForced": paste_env().is_some(),
+
+        "theme": theme_choice(&path),
+        "themes": THEMES,
+    })
+}
+
+/// Change one setting, apply whatever has to happen now, and say if it failed.
+///
+/// Most of these are read at the top of the next dictation and need nothing
+/// done here — that is deliberate, and it is why changing the paste route or
+/// the paste route mid-sentence cannot disturb the sentence. Two are not:
+///
+///   * **`hotkey` rebinds immediately**, because the whole reason to change it
+///     is that the current one does not work, and being told to restart the app
+///     to find out is not an answer. It rebinds *before* it saves: a key another
+///     application owns fails here, the previous one is taken back, and the
+///     `Err` goes to the window so the user reads the reason instead of stderr.
+///   * **`theme` is emitted**, so the pill repaints without waiting for its next
+///     appearance.
+///
+/// An `Err` is a rejected promise in the page. Every one of them is a sentence
+/// meant to be read by whoever clicked, not a debug string.
+#[tauri::command]
+fn settings_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let path = settings_path(&app);
+
+    // Validate before saving, always. `settings.json` is read by a running app
+    // on every dictation, so a value written here that no reader accepts is a
+    // setting that silently does nothing.
+    match key.as_str() {
+        "hotkey" => {
+            let previous = hotkey(&app);
+            if value == previous {
+                return Ok(());
+            }
+            Shortcut::from_str(&value).map_err(|e| format!("{value} is not a usable shortcut ({e})"))?;
+
+            let gs = app.global_shortcut();
+            let _ = gs.unregister_all();
+            if let Err(e) = gs.register(value.as_str()) {
+                eprintln!("hotkey  {value} refused ({e}) — keeping {previous}");
+                if let Err(e) = gs.register(previous.as_str()) {
+                    eprintln!("hotkey  {previous} could not be taken back either ({e})");
+                    return Err(format!(
+                        "{value} is already taken by another application, and {previous} \
+                         could not be taken back. Pick a different one."
+                    ));
+                }
+                return Err(format!(
+                    "{value} is already taken by another application. Still using {previous}."
+                ));
+            }
+            println!("hotkey  {value}");
+        }
+        "paste" => {
+            if paste_env().is_some() {
+                return Err("KOTHA_PASTE is set, so it decides the text output.".into());
+            }
+            if !PASTE_MODES.iter().any(|(id, _)| *id == value) {
+                return Err(format!("{value} is not a text output route"));
+            }
+            println!("output  {value} — from the next dictation");
+        }
+        "theme" => {
+            if !THEMES.iter().any(|(id, _)| *id == value) {
+                return Err(format!("{value} is not a theme"));
+            }
+        }
+        other => return Err(format!("{other} is not a setting")),
+    }
+
+    save_setting(&path, &key, &value);
+    if key == "theme" {
+        let _ = app.emit("kotha://theme", &value);
+    }
+    Ok(())
+}
+
 /// Bytes already on disk, or 0 — a missing file and an empty one are the same
 /// thing to a resume.
 fn on_disk(path: &Path) -> u64 {
@@ -479,7 +609,12 @@ fn main() {
 
     tauri::Builder::default()
         .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
-        .invoke_handler(tauri::generate_handler![start_download, hotkey_label])
+        .invoke_handler(tauri::generate_handler![
+            start_download,
+            hotkey_label,
+            settings_get,
+            settings_set
+        ])
         .setup(move |app| {
             // Kotha is a tray application, and on macOS that is a policy, not
             // a style. `Accessory` drops the Dock icon and the ⌘-Tab entry —
@@ -713,9 +848,10 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
             continue;
         }
 
-        // The tray can change this between dictations. Reopening costs a
-        // clipboard handle and, on the portal route, the permission dialog — so
-        // only when the choice actually changed, and never mid-dictation.
+        // The settings window can change this between dictations. Reopening
+        // costs a clipboard handle and, on the portal route, the permission
+        // dialog — so only when the choice actually changed, and never
+        // mid-dictation.
         let chosen = paste_setting(&app);
         if chosen != mode {
             mode = chosen;
@@ -1209,6 +1345,19 @@ fn show(app: &AppHandle) {
     };
     let _ = place(app, &w);
 
+    // The pill's contract is one-way and stays that way: it never calls into
+    // Rust, so it cannot ask which theme is on. It is told, here, every time it
+    // is about to be seen.
+    //
+    // Emitting on change would be enough for a window that stayed open, and
+    // `settings_set` does that too so the change is visible the moment it is
+    // made. This second emit is for the case that change cannot cover: the pill
+    // is hidden between dictations, and the setting could have been edited in
+    // the file, or by another instance, or before this page finished parsing.
+    // Sending it at show time costs one event per dictation and removes the
+    // whole class of "the pill is the wrong colour until you restart".
+    let _ = app.emit("kotha://theme", theme_choice(&settings_path(app)));
+
     // `show()` alone leaves the pill behind the active application, and on a
     // window that has never been on screen it is also the moment AppKit
     // learns which Spaces the window belongs to. So the macOS ordering goes
@@ -1355,6 +1504,12 @@ const PASTE_MODES: [(&str, &str); 3] = [
     ("portal", "Paste at the cursor (portal)"),
 ];
 
+/// The three themes. `system` follows the desktop; the other two override it.
+/// Resolved to a concrete light or dark in the UI — see the head of
+/// `settings.js` — so the stylesheet has two palettes and not three.
+const THEMES: [(&str, &str); 3] =
+    [("system", "Match the system"), ("dark", "Dark"), ("light", "Light")];
+
 /// One file, one JSON object. The hotkey and the microphone add keys here.
 fn settings_path(app: &AppHandle) -> PathBuf {
     app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from(".")).join("settings.json")
@@ -1409,12 +1564,21 @@ fn paste_choice(path: &Path) -> String {
         .unwrap_or_else(|| "copy".into())
 }
 
-/// The hotkeys the tray offers, in Tauri's accelerator syntax. The first is the
-/// default.
+/// The chosen theme, or `system`. Junk falls back rather than reaching the UI,
+/// where an unknown value would leave the page with no palette at all.
+fn theme_choice(path: &Path) -> String {
+    setting(path, "theme")
+        .filter(|t| THEMES.iter().any(|(id, _)| id == t))
+        .unwrap_or_else(|| THEMES[0].0.to_string())
+}
+
+/// The hotkeys the settings window offers, in Tauri's accelerator syntax. The
+/// first is the default.
 ///
-/// A fixed list and not a key-capture widget: capturing a chord needs a focused
-/// window and a page to draw it on, and what this actually has to solve is a
-/// *collision*, not a preference.
+/// A fixed list and not a key-capture widget. There is a focused window to draw
+/// one on now, but what this has to solve is still a *collision* rather than a
+/// preference: the list exists so that a user whose IDE already owns F9 has
+/// somewhere to go, and four alternatives cover that.
 ///
 /// **F9 is the default, and `Ctrl+Alt+Space` is not, for two measured reasons.**
 /// That chord is fcitx's and ibus's input-method switch, so on a Bangladeshi
@@ -1444,12 +1608,12 @@ fn paste_choice(path: &Path) -> String {
 /// modifier, so ⌥⇧D would type `Î` if it were not grabbed — it is grabbed,
 /// because Carbon's `RegisterEventHotKey` consumes the key.
 ///
-/// Kayes's to overrule: it is a default, changeable from the tray without
-/// touching this list.
+/// Kayes's to overrule: it is a default, changeable from the settings window
+/// without touching this list.
 ///
-/// The list is what the menu offers, not what is accepted. `hotkey` validates by
-/// parsing, so anything Tauri understands can be written into `settings.json` by
-/// hand and the menu will show it alongside these.
+/// The list is what the window offers, not what is accepted. `hotkey` validates
+/// by parsing, so anything Tauri understands can be written into
+/// `settings.json` by hand and the window will show it alongside these.
 #[cfg(target_os = "macos")]
 const HOTKEYS: [&str; 4] = ["Alt+Shift+D", "Ctrl+Shift+Space", "Ctrl+Alt+Space", "F9"];
 
@@ -1535,65 +1699,36 @@ fn tray_icon(app: &AppHandle) -> tauri::Result<tauri::image::Image<'_>> {
         .clone())
 }
 
+/// The tray menu: start a dictation, open the settings, leave.
+///
+/// It used to carry the settings itself — a Hotkey submenu and a Text output
+/// submenu, both built out of `CheckMenuItem`s. That went away when the
+/// settings window arrived, and the reason is not tidiness. A check item
+/// toggles only itself when clicked, so each submenu had to hand-set every
+/// sibling's tick or the menu would show two at once; the bound key had to be
+/// written back into the "Dictate" label; and the whole lot was a second place
+/// that had to agree with `settings.json` about what the app was doing. Three
+/// synchronisation problems for controls the settings window draws better,
+/// with a label on each one saying what it is for.
+///
+/// What is left is what a tray is actually good at: the thing you do most, the
+/// place everything else lives, and the way out.
 fn tray(app: &AppHandle) -> tauri::Result<()> {
-    // ponytail: a fixed label rather than one that flips to "Stop". The pill
-    // on screen already says which state we are in, and keeping the menu item
-    // in sync means holding it in app state. Worth it once there is a real
-    // settings window to hang it off — Phase 5.
-    let bound = hotkey(app);
-    let dictate =
-        MenuItem::with_id(app, "dictate", format!("Dictate  {bound}"), true, None::<&str>)?;
+    // ponytail: a fixed label rather than one that flips to "Stop". The pill on
+    // screen already says which state we are in, and keeping the item in sync
+    // would mean holding it in app state. The hotkey is no longer named here
+    // for the same reason — the settings window shows it, and it is the thing
+    // that changes it.
+    let dictate = MenuItem::with_id(app, "dictate", "Dictate", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Kotha", true, None::<&str>)?;
-
-    // The offered list, plus whatever is actually bound if someone wrote a
-    // fifth thing into settings.json — an unticked menu is worse than a long
-    // one, and hiding a setting the app is obeying is how support tickets start.
-    let offered: Vec<String> = HOTKEYS
-        .iter()
-        .map(|k| k.to_string())
-        .chain((!HOTKEYS.contains(&bound.as_str())).then(|| bound.clone()))
-        .collect();
-    let keys = offered
-        .iter()
-        .map(|k| {
-            CheckMenuItem::with_id(app, format!("key:{k}"), k, true, *k == bound, None::<&str>)
-        })
-        .collect::<tauri::Result<Vec<_>>>()?;
-    let hotkeys = Submenu::with_items(
-        app,
-        "Hotkey",
-        true,
-        &keys.iter().map(|m| m as &dyn IsMenuItem<_>).collect::<Vec<_>>(),
-    )?;
-
-    // The first real setting, and the one worth having first: getting the paste
-    // route wrong is what cost an evening in Phase 3, and until now the only way
-    // to say it was an environment variable — which a shipped app has nobody to
-    // set. A tray submenu because it is three fixed choices; a settings *window*
-    // is Phase 7, and would be a window, a page and a capability entry for what
-    // the platform already draws.
-    let forced = paste_env().is_some();
-    let chosen = paste_setting(app);
-    let modes = PASTE_MODES
-        .iter()
-        .map(|(id, label)| {
-            CheckMenuItem::with_id(app, format!("paste:{id}"), label, !forced, *id == chosen, None::<&str>)
-        })
-        .collect::<tauri::Result<Vec<_>>>()?;
-    let output = Submenu::with_items(
-        app,
-        if forced { "Text output  (KOTHA_PASTE)" } else { "Text output" },
-        true,
-        &modes.iter().map(|m| m as &dyn IsMenuItem<_>).collect::<Vec<_>>(),
-    )?;
 
     let menu = Menu::with_items(
         app,
         &[
             &dictate,
             &PredefinedMenuItem::separator(app)?,
-            &hotkeys,
-            &output,
+            &settings,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
@@ -1609,43 +1744,9 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "dictate" => toggle(app),
+            "settings" => show_settings(app),
             "quit" => app.exit(0),
-            id if id.starts_with("key:") => {
-                let want = &id["key:".len()..];
-                let previous = hotkey(app);
-                if want == previous {
-                    return;
-                }
-                // Rebind before saving. A key another application already owns
-                // fails here, which is the whole reason this menu exists — and
-                // the one outcome that must not leave Kotha with nothing bound.
-                let gs = app.global_shortcut();
-                let _ = gs.unregister_all();
-                if let Err(e) = gs.register(want) {
-                    eprintln!("hotkey  {want} refused ({e}) — something else has it; keeping {previous}");
-                    if let Err(e) = gs.register(previous.as_str()) {
-                        eprintln!("hotkey  {previous} could not be taken back either ({e}) — use the tray icon");
-                    }
-                    return;
-                }
-                save_setting(&settings_path(app), "hotkey", want);
-                let _ = dictate.set_text(format!("Dictate  {want}"));
-                for (item, offer) in keys.iter().zip(&offered) {
-                    let _ = item.set_checked(offer == want);
-                }
-                println!("hotkey  {want}");
-            }
-            id => {
-                let Some(mode) = id.strip_prefix("paste:") else { return };
-                // A check item toggles only itself when clicked, so the other
-                // two have to be told or the menu shows two ticks. These are
-                // radio buttons drawn as checkboxes; muda has no radio item.
-                for (item, (known, _)) in modes.iter().zip(PASTE_MODES) {
-                    let _ = item.set_checked(known == mode);
-                }
-                save_setting(&settings_path(app), "paste", mode);
-                println!("output  {mode} — from the next dictation");
-            }
+            other => eprintln!("tray    unknown menu id {other}"),
         })
         .build(app)?;
 
@@ -1694,6 +1795,36 @@ mod tests {
         for k in HOTKEYS {
             assert!(Shortcut::from_str(k).is_ok(), "{k} is not a usable accelerator");
         }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The theme is the same quiet-failure class as the two above: a junk
+    /// value would reach `data-theme`, match neither palette, and leave a
+    /// window with no colours at all.
+    #[test]
+    fn the_theme_falls_back_rather_than_reaching_the_page() {
+        let path = std::env::temp_dir().join("kotha-theme-test.json");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(theme_choice(&path), "system", "no file means follow the desktop");
+
+        save_setting(&path, "theme", "light");
+        assert_eq!(theme_choice(&path), "light");
+
+        std::fs::write(&path, r#"{"theme":"neon"}"#).unwrap();
+        assert_eq!(theme_choice(&path), "system", "an unknown theme must fall back");
+
+        // Three settings share the file. Writing any one must not lose the
+        // others — the same clobbering check as above, at the width it is now.
+        std::fs::remove_file(&path).ok();
+        for (k, v) in [("paste", "portal"), ("hotkey", "F9"), ("theme", "dark")] {
+            save_setting(&path, k, v);
+        }
+        assert_eq!(paste_choice(&path), "portal");
+        assert_eq!(hotkey_choice(&path), "F9");
+        assert_eq!(theme_choice(&path), "dark");
+        assert_eq!(THEMES[0].0, "system", "theme.js defaults to system; so must Rust");
 
         std::fs::remove_file(&path).ok();
     }

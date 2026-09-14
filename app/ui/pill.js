@@ -10,6 +10,14 @@
 
      emit("kotha://state", "idle" | "listening" | "thinking" | "done" | "error")
      emit("kotha://level", <number 0..1>)          // 30 per second, always
+     emit("kotha://theme", "system" | "dark" | "light")
+
+   `theme` arrives on every change and again just before the pill is shown.
+   Twice, because the pill is hidden between dictations and this page cannot
+   ask — the contract is one-way, so being told again at show time is what
+   replaces a read. It costs one event per dictation and removes the whole
+   class of "the pill is the wrong colour until you restart". Resolving what
+   `system` means is theme.js's job, not this file's.
 
    `level` is a plain RMS of the last 1/30 s of audio, unshaped. All the
    curve fitting that makes it look good lives in shape() and push() below,
@@ -188,6 +196,7 @@ if (window.__TAURI__) {
   const { listen } = window.__TAURI__.event;
   listen("kotha://state", (e) => setState(e.payload));
   listen("kotha://level", (e) => push(e.payload));
+  listen("kotha://theme", (e) => kothaTheme(e.payload));
 }
 
 setState("idle");

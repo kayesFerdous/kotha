@@ -12,6 +12,12 @@
   for the entire Rust↔UI contract (it is two events wide), and the token block
   at the top of pill.css for every colour and dimension.
 
+  THEMES
+  ------
+  Dark and light, and the pill is no longer dark-only. theme.js in the <head>
+  resolves the setting to a concrete data-theme before anything paints; every
+  colour below that is a token in pill.css. Rust says which via a third event.
+
   THE IDEA, IN ONE LINE
   --------------------
   Five bars of light that never move. Only their brightness changes — with the
@@ -29,6 +35,8 @@
 <head>
   <meta charset="utf-8">
   <title>Kotha</title>
+  <!-- Before the stylesheet paints anything: see the head of theme.js. -->
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="pill.css">
 </head>
 <body>

@@ -36,7 +36,7 @@ A small pill appears while you talk, showing that it is listening. Each pause
 in your speech closes a chunk, and that chunk is transcribed while you keep
 going — so the text arrives as you speak, not all at once at the end.
 
-Everything else lives in the tray icon.
+Everything else lives in **Settings**, from the tray icon.
 
 ## Installing
 
@@ -63,14 +63,20 @@ nothing needs the network afterwards.
 
 **Press F9 to start talking. Press it again to stop.**
 
-The tray icon holds everything else:
+The tray icon has three items — **Dictate** (same as pressing F9),
+**Settings…**, and **Quit**. Everything you can change is in Settings:
 
-| Menu | What it does |
+| Setting | What it does |
 |---|---|
-| **Dictate** | Same as pressing F9 |
 | **Hotkey** | Change the key, if F9 clashes with something you use |
 | **Text output** | How the text reaches you — see below |
-| **Quit** | Closes it |
+| **Appearance** | Dark, light, or follow your desktop |
+
+Changes save as you make them. Text output takes effect on your next
+dictation; the hotkey and the theme take effect immediately.
+
+There is no language setting. Kotha transcribes Bangla speech and writes the
+English words in Latin script, and that is the one thing it does.
 
 ### Text output
 
@@ -118,7 +124,7 @@ visible misspelling is easier to fix than a confident wrong word.
 ## Where your settings live
 
 ```
-~/.config/app.kotha/settings.json      your hotkey and paste choice
+~/.config/app.kotha/settings.json      hotkey, text output, theme
 ~/.local/share/app.kotha/              the downloaded model
 ```
 

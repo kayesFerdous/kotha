@@ -1,0 +1,79 @@
+<!doctype html>
+<!--
+  Kotha — the settings window.
+
+  The third window and the second ordinary one: it takes focus, it has
+  controls on it, and it is the home for everything that used to be a tray
+  submenu. The tray is now Dictate / Settings… / Quit, and that is deliberate
+  — a check menu item cannot say what it is for, cannot be grouped under a
+  heading, and had to be hand-synchronised with settings.json every time it
+  was clicked.
+
+  Like index.html and setup.html it opens in a plain browser and works:
+  settings.js fakes the whole backend when there is no Tauri around it. So
+  restyling this is a file save and a refresh, not a ten-minute CTranslate2
+  rebuild. Its styles live in pill.css under `body.settings`.
+
+  THE PAGE IS EMPTY ON PURPOSE
+  ---------------------------
+  Every option below is rendered by settings.js from what Rust sends. The
+  lists of hotkeys, text-output routes and themes are Rust constants, and a
+  copy of them written out here is a copy that drifts from what the app will
+  actually accept — which is exactly how a settings window starts offering
+  something that silently does nothing.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kotha Settings</title>
+  <!-- Before the stylesheet paints anything: see the head of theme.js. -->
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="pill.css">
+</head>
+<body class="settings">
+
+  <header>
+    <!-- The app's mark: a Latin k wearing a Bengali matra. Inline rather than
+         an <img> so the k inherits the text colour and flips with the theme,
+         and so the matra is the same --alert the pill's error state uses. -->
+    <svg class="mark" viewBox="0 0 158 302" aria-hidden="true">
+      <g transform="translate(-200 -90)">
+        <rect x="200" y="160" width="52" height="232" fill="currentColor"/>
+        <path d="M226 318 L354 252.7" stroke="currentColor" stroke-width="42" fill="none"/>
+        <path d="M226 318 L354 372.7" stroke="currentColor" stroke-width="42" fill="none"/>
+        <rect class="bar" x="200" y="90" width="110" height="42"/>
+      </g>
+    </svg>
+    <h1>Kotha Settings</h1>
+  </header>
+
+  <main>
+    <section>
+      <h2>Hotkey</h2>
+      <p class="hint">Press it anywhere to start, and again to stop.</p>
+      <div class="options" id="hotkey"></div>
+      <p class="warn" id="hotkey-unbound" hidden></p>
+    </section>
+
+    <section>
+      <h2>Text output</h2>
+      <p class="hint">Where the words go when a sentence is finished.</p>
+      <div class="options" id="paste"></div>
+      <p class="warn" id="paste-forced" hidden></p>
+    </section>
+
+    <section>
+      <h2>Appearance</h2>
+      <p class="hint">Applies to the pill and to this window.</p>
+      <div class="options" id="theme"></div>
+    </section>
+  </main>
+
+  <!-- Empty at rest. It is written to on a save and on a failure, and it is
+       not a permanent "Saved" badge: a page that always says that has stopped
+       meaning it. -->
+  <footer id="status"></footer>
+
+  <script src="settings.js"></script>
+</body>
+</html>

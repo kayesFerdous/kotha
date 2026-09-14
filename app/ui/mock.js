@@ -14,6 +14,9 @@
      m            toggle between fake speech and silence while listening,
                   which is the difference between a lit glyph and the five
                   resting bars an armed, silent pill shows
+     t            cycle the theme: system → dark → light. Stands in for the
+                  kotha://theme event, which is the only way the real pill
+                  ever learns this — it cannot ask.
 
    It also runs a scripted loop on load so the pill is doing something the
    moment the file opens.
@@ -31,6 +34,12 @@ if (window.__TAURI__) {
 
   let speaking = true;
   let t = 0;
+
+  /* Same three the settings window offers, in the same order. `system` first
+     because it is the default and the one most likely to be wrong-looking on
+     a given desktop. */
+  const THEMES = ["system", "dark", "light"];
+  let theme = 0;
 
   /* Fake RMS that reads like a voice rather than a sine wave: a slow syllable
      envelope, a faster tremor on top, and a noise floor. The point is only to
@@ -86,6 +95,10 @@ if (window.__TAURI__) {
       setState(STATES[Number(e.key) - 1]);
     } else if (e.key.toLowerCase() === "m") {
       speaking = !speaking;
+    } else if (e.key.toLowerCase() === "t") {
+      theme = (theme + 1) % THEMES.length;
+      kothaTheme(THEMES[theme]);
+      console.info(`kotha: theme ${THEMES[theme]}`);
     }
   });
 
@@ -96,4 +109,10 @@ if (window.__TAURI__) {
   document.body.style.background = `
     conic-gradient(from 90deg at 1px 1px, #0000 25%, #8883 0) 0 0/22px 22px,
     linear-gradient(120deg, #f3f4f6, #cbd5e1 45%, #475569 46%, #1e293b)`;
+
+  /* It runs from white to near-black on purpose, and it is the only way to
+     check the thing both themes have to survive: the pill floats over content
+     it does not control. A light pill has to stay legible on the dark end of
+     that gradient and a dark one on the light end. Press `t` and drag the
+     window. */
 }

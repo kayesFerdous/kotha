@@ -177,10 +177,27 @@ impl Engine {
                 Default::default(),
             )?;
 
-            // Language is pinned to Bengali. The model is a Bengali fine-tune
-            // and letting Whisper auto-detect on code-switched speech is a coin
-            // flip. `<|notimestamps|>` matches faster-whisper's
-            // without_timestamps path.
+            // Language is pinned to Bengali, and this is not a default that
+            // is waiting for a setting — it is the only value that means
+            // anything on this model. **Measured 2026-09-14**, five test clips
+            // decoded twice with `<|bn|>` and `<|en|>`: three came back
+            // byte-identical, and the two that differed differed like this —
+            //
+            //     bn: আল্লাহামদুলিল্লাহ এটা একটা great opportunity
+            //     en: alhamdullah         এটা একটা grate opportunity
+            //
+            // — still Bangla, with one word pushed out of Bangla script and
+            // "great" misspelled. The token reaches the model (the average
+            // logprob moves, -0.058 to -0.056) and the model does not care:
+            // it was fine-tuned on `<|bn|>` hard enough that the language
+            // embedding is inert. A user-facing language switch was built on
+            // top of this and removed the same day, because what it offered
+            // was a choice between Bangla and slightly worse Bangla.
+            //
+            // Auto-detection is separately a coin flip on code-switched
+            // speech, which is the other reason there is nothing to choose.
+            // `<|notimestamps|>` matches faster-whisper's without_timestamps
+            // path.
             let prompt = vec![
                 "<|startoftranscript|>",
                 "<|bn|>",
