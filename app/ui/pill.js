@@ -34,19 +34,36 @@ const STATES = ["idle", "listening", "thinking", "done"];
 /** How long the tick lingers before the pill fades out, in ms. */
 const DONE_DWELL = 1100;
 
-/* Waveform shaping. These four numbers are the whole feel of the thing.
+/* Waveform shaping. These numbers are the whole feel of the thing.
 
-   GAIN/CURVE  Speech RMS sits low — a normal voice is maybe 0.05–0.2, and a
-               linear mapping leaves the pill looking dead. The curve lifts
-               quiet speech much more than loud, which is roughly how hearing
-               works anyway.
-   ATTACK      1.0 = a syllable hits its full height on the frame it arrives.
-               Anything less reads as laggy.
-   RELEASE     How much of the previous height survives into the next frame.
-               This is what turns thirty discrete samples a second into a
-               wave that falls away instead of flickering. */
-const GAIN = 3.6;
-const CURVE = 0.85;
+   The level arrives as linear RMS, and loudness is heard in decibels, so that
+   is the scale it is drawn on. Measured through the M2's built-in microphone,
+   2026-09-14, in the same 33 ms windows Rust sends: a quiet room sits at -46
+   to -42 dBFS and never rose above -38; ordinary speech is roughly -35 to
+   -15. The curve this replaces (RMS × 3.6, to the power 0.85) drew -30 dBFS
+   at 16% of a bar — about two pixels — so the wave looked dead while the user
+   talked, and the first obvious motion was the `thinking` animation after
+   they stopped.
+
+   QUIET         dBFS drawn as a resting dot. Just above that room's loudest
+                 silence, so an empty room does not twitch.
+   LOUD          dBFS drawn at full height. Raised speech reaches it; ordinary
+                 speech lands around half to three quarters.
+   FLOOR_*       The quiet end follows the room. A fan or a café lifts the
+                 floor by FLOOR_RISE dB a frame (1 dB a second), and anything
+                 quieter pulls it straight back down, which the gaps between
+                 syllables do all the time. FLOOR_MAX stops a long loud
+                 sentence dragging the floor up into the speech itself.
+   RELEASE       How much of the previous height survives into the next
+                 frame. This is what turns thirty discrete samples a second
+                 into a wave that falls away instead of flickering. Attack is
+                 instant: a syllable hits its full height on the frame it
+                 arrives, and anything slower reads as lag. */
+const QUIET = -40;
+const LOUD = -12;
+const FLOOR_RISE = 1 / 30;
+const FLOOR_MARGIN = 4;
+const FLOOR_MAX = -30;
 const RELEASE = 0.80;
 
 const root = document.documentElement;
@@ -72,9 +89,16 @@ const bars = Array.from({ length: count }, (_, i) => {
 const history = new Array(count).fill(0);
 let held = 0;
 let doneTimer = null;
+/* The room's noise, in dBFS. Lives for the life of the page, so a second
+   dictation in the same room starts already adapted. */
+let floor = QUIET - FLOOR_MARGIN;
 
 function shape(level) {
-  return Math.min(1, Math.pow(Math.max(0, level) * GAIN, CURVE));
+  const db = 20 * Math.log10(Math.max(level, 1e-6));
+  const next = db < floor ? db : floor + FLOOR_RISE;
+  floor = Math.min(FLOOR_MAX, Math.max(QUIET - FLOOR_MARGIN, next));
+  const quiet = floor + FLOOR_MARGIN;
+  return Math.min(1, Math.max(0, (db - quiet) / (LOUD - quiet)));
 }
 
 /** One microphone frame. Called ~30 times a second while listening. */
