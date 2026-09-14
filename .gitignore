@@ -45,3 +45,8 @@ app/src-tauri/gen/
 # .backup/.
 CLAUDE.md
 PLAN.md
+
+# Skills installed by `npx skills add`. Tooling, not product.
+.agents/
+.claude/skills/
+skills-lock.json
