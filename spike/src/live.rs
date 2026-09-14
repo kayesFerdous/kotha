@@ -244,7 +244,12 @@ pub struct Output {
 
 impl Output {
     /// `restore_token` is the one saved by a previous run, or `None` the first
-    /// time. It only means anything on the portal route.
+    /// time.
+    ///
+    /// It is **not** portal-only, which is what an earlier version of this
+    /// comment claimed and what cost a permission dialog on every launch: on
+    /// KDE Wayland the plain `paste` route reaches libei too, and asks for the
+    /// same grant. Every branch of `connect_keyboard` takes it now.
     pub fn open((paste, portal): (bool, bool), restore_token: Option<String>) -> Self {
         let clipboard = match arboard::Clipboard::new() {
             Ok(c) => Some(c),
@@ -255,6 +260,21 @@ impl Output {
                 None
             }
         };
+
+        // Said out loud, because the two outcomes look identical from here:
+        // the desktop either restores the grant silently or puts the dialog up
+        // again, and this process is not told which. If a dialog appears on a
+        // launch whose log says "offering the saved permission", the token was
+        // refused — which is a different bug from never having sent one.
+        if paste {
+            println!(
+                "output  {}",
+                match &restore_token {
+                    Some(_) => "offering the saved permission back to the desktop",
+                    None => "no saved permission yet — the desktop will ask once",
+                }
+            );
+        }
 
         let mut how = "";
         let keyboard = paste.then(|| connect_keyboard(portal, restore_token)).and_then(|r| match r {
@@ -427,16 +447,35 @@ fn connect_keyboard(
     }
 
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        // The token goes here too, and leaving it out was a bug worth naming:
+        // this route asks for a permission it then could not remember.
+        //
+        // enigo's Wayland backend is not only the virtual-keyboard protocol.
+        // Where the compositor does not offer that — KWin does not, which is
+        // the measured fact three notes up — it reaches the same libei the
+        // portal route does, and the desktop puts up the same "allow remote
+        // control?" dialog. `Output::open` then reads a token back off the
+        // connection and saves it, because `fresh_token` asks the *connection*
+        // and does not care which branch opened it.
+        //
+        // So the token was written to settings.json on every launch and handed
+        // back on none of them, and the dialog came up every single time. The
+        // clone is because this attempt may fail and fall through to X11.
         let wayland_only = Settings {
             x11_display: nowhere(),
+            restore_token: restore_token.clone(),
             ..Default::default()
         };
         if let Ok(k) = Enigo::new(&wayland_only) {
             return Ok((k, "wayland virtual keyboard — reaches every window"));
         }
     }
+    // XTEST does not have permissions to restore, so the token is inert here.
+    // Passed anyway rather than dropped: every branch handling it the same way
+    // is what stops the next one from forgetting.
     Enigo::new(&Settings {
         wayland_display: nowhere(),
+        restore_token,
         ..Default::default()
     })
     .map(|k| {
