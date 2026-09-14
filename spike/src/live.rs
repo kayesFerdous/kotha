@@ -750,14 +750,14 @@ pub struct Microphone {
     pub stream: cpal::Stream,
     pub blocks: mpsc::Receiver<Vec<f32>>,
     pub intake: Intake,
-    /// How many samples of a captured block make up roughly 1/30 second.
+    /// How many interleaved samples make up 1/30 second at the device's rate.
     ///
-    /// The pill's waveform wants a steady ~30 levels a second, and a capture
-    /// block is whatever size the driver felt like — 64 ms here, but it is a
-    /// hardware decision and a large one would make the waveform update twice
-    /// a second and look frozen. Slicing each block into pieces this size
-    /// makes the animation the same on every machine, and every value is
-    /// still the RMS of a real 33 ms window.
+    /// The pill's waveform wants a steady 30 levels a second, and a capture
+    /// block is whatever size the driver chose — 64 ms on the Linux box,
+    /// 10.7 ms on the M2. Neither is 33 ms, so the app accumulates samples to
+    /// this size across blocks and emits one RMS per full window. Slicing per
+    /// block, which is what this used to describe, only handles blocks larger
+    /// than a window; see `meter` in the app for what the small ones did.
     pub level_chunk: usize,
 }
 

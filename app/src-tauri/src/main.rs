@@ -784,11 +784,16 @@ fn dictate(
         worst_lag = worst_lag.max(captured.elapsed());
 
         if !logged_block {
+            // `level_chunk` is 1/30 s of interleaved samples at the device's
+            // own rate, so thirty of them is one second of what the driver
+            // delivers. Not SAMPLE_RATE: that is the model's 16 kHz, after
+            // resampling, and dividing by it made this line report an 11 ms
+            // block at 48 kHz as 32 ms.
+            let per_second = (level_chunk * 30) as f64;
             println!(
-                "audio   {} samples per block ({:.0} ms), {} levels per block",
+                "audio   {} samples per block ({:.1} ms) | waveform at 30 levels/s",
                 block.len(),
-                block.len() as f64 / kotha_spike::SAMPLE_RATE as f64 * 1000.0,
-                block.len().div_ceil(level_chunk).max(1)
+                block.len() as f64 / per_second * 1000.0,
             );
             logged_block = true;
         }
@@ -849,10 +854,23 @@ fn dictate(
 /// late is a level that lies.
 ///
 /// So the meter sits between the microphone and the loop. It reads each
-/// block the moment the driver delivers it, emits one level per ~33 ms of it
-/// — see `Microphone::level_chunk` for why the slicing is per block — and
-/// only then forwards the block, stamped with when it was captured so the
-/// loop can say how far behind it is. It ends by itself: dropping the stream
+/// block the moment the driver delivers it, turns it into levels, and only
+/// then forwards the block, stamped with when it was captured so the loop can
+/// say how far behind it is.
+///
+/// **One level per 1/30 s of audio, whatever size the blocks are.** The first
+/// version sliced each block into 33 ms pieces, which only does anything to a
+/// block longer than 33 ms. CoreAudio delivers the M2's microphone in
+/// 512-frame blocks — 10.7 ms at 48 kHz — so every block became one level:
+/// about 94 a second instead of the 30 `pill.js` is tuned for. That tripled
+/// the script evaluations sent into the web view, scrolled the 21-bar history
+/// across the pill in a fifth of a second, made a release tuned per frame
+/// decay three times too fast, and restarted every bar's 70 ms height
+/// transition every 11 ms, so no bar ever reached the height it was given —
+/// the wave looked flat while the user was talking. A window now closes when
+/// 1/30 s of samples has accumulated, across as many blocks as that takes. A
+/// sound reaches the pill within one window, 33 ms, of the driver handing it
+/// over. It ends by itself: dropping the stream
 /// closes the microphone's channel, the `for` finishes, and the forwarding
 /// end closes behind it, which is what the loop sees as "device gone".
 ///
@@ -870,12 +888,19 @@ fn meter(
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let (mut blocks, mut loudest) = (0usize, 0f32);
+        // The part-filled window, carried from one block into the next.
+        let (mut squares, mut filled) = (0f32, 0usize);
         for block in mic {
             blocks += 1;
-            for piece in block.chunks(level_chunk) {
-                let level = live::rms(piece);
-                loudest = loudest.max(level);
-                let _ = app.emit("kotha://level", level);
+            for &sample in &block {
+                squares += sample * sample;
+                filled += 1;
+                if filled == level_chunk {
+                    let level = (squares / filled as f32).sqrt();
+                    loudest = loudest.max(level);
+                    let _ = app.emit("kotha://level", level);
+                    (squares, filled) = (0.0, 0);
+                }
             }
             if tx.send((Instant::now(), block)).is_err() {
                 break;
