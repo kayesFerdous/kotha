@@ -50,7 +50,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context};
 
@@ -731,6 +731,7 @@ fn dictate(
     // seconds and 1.4 GB. `Microphone` is not Send under ALSA, which is the
     // other reason all of this lives on one thread.
     let Microphone { stream, blocks, mut intake, level_chunk } = live::open_microphone()?;
+    let blocks = meter(app, blocks, level_chunk);
     show(app);
     let _ = app.emit("kotha://state", "listening");
 
@@ -755,6 +756,7 @@ fn dictate(
     let mut n = 0usize;
     let mut last_voice = std::time::Instant::now();
     let mut logged_block = false;
+    let mut worst_lag = Duration::ZERO;
     let idle = idle_stop();
 
     let stopped_by = loop {
@@ -767,13 +769,19 @@ fn dictate(
             Ok(Cmd::Start) | Ok(Cmd::Fetch) | Err(mpsc::TryRecvError::Empty) => {}
         }
 
-        let block = match blocks.recv_timeout(POLL) {
+        let (captured, block) = match blocks.recv_timeout(POLL) {
             Ok(b) => b,
             // A silent room produces blocks too, so a timeout means the device
             // stopped rather than that nobody is speaking.
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break "device gone",
         };
+
+        // How far behind the microphone this loop is running. It blocks for
+        // the length of every decode, so this climbs to seconds after each
+        // sentence — which is fine for the audio, since nothing is dropped,
+        // and is exactly why the level meter does not live in here.
+        worst_lag = worst_lag.max(captured.elapsed());
 
         if !logged_block {
             println!(
@@ -783,13 +791,6 @@ fn dictate(
                 block.len().div_ceil(level_chunk).max(1)
             );
             logged_block = true;
-        }
-
-        // One level per ~33 ms rather than one per capture block, so the
-        // waveform moves at the same speed whatever buffer size the driver
-        // chose. See `Microphone::level_chunk`.
-        for piece in block.chunks(level_chunk) {
-            let _ = app.emit("kotha://level", live::rms(piece));
         }
 
         // The VAD closes a chunk at every pause, so text lands while the user
@@ -827,8 +828,71 @@ fn dictate(
     app.state::<Session>().listening.store(false, Ordering::SeqCst);
     let _ = app.emit("kotha://state", if n > 0 { "done" } else { "idle" });
     hide_soon(app, if n > 0 { HIDE_AFTER } else { Duration::from_millis(400) });
-    println!("stopped on {stopped_by} after {n} utterance(s)\n");
+    println!(
+        "stopped on {stopped_by} after {n} utterance(s); loop fell up to {:.1}s behind the microphone\n",
+        worst_lag.as_secs_f64()
+    );
     Ok(())
+}
+
+/// Drive the pill's waveform from the microphone directly, and pass the audio
+/// on to the dictation loop.
+///
+/// This used to happen inside the loop, and the waveform lagged the voice by
+/// the length of a decode. The loop transcribes on its own thread — the
+/// engine is not `Send` and lives there — so every utterance stops it for a
+/// few seconds, during which the capture blocks queue up, and the levels for
+/// everything said meanwhile arrived in one burst when it came back. The
+/// pill would sit still through a sentence and then twitch through it in a
+/// frame. The audio is fine with that, because nothing is dropped and text
+/// lands where it should; the meter is not, because a level that arrives
+/// late is a level that lies.
+///
+/// So the meter sits between the microphone and the loop. It reads each
+/// block the moment the driver delivers it, emits one level per ~33 ms of it
+/// — see `Microphone::level_chunk` for why the slicing is per block — and
+/// only then forwards the block, stamped with when it was captured so the
+/// loop can say how far behind it is. It ends by itself: dropping the stream
+/// closes the microphone's channel, the `for` finishes, and the forwarding
+/// end closes behind it, which is what the loop sees as "device gone".
+///
+/// On the way out it logs how many blocks arrived and the loudest level among
+/// them. Without that line a dead microphone and a quiet user leave identical
+/// logs — no VAD, no decode, no text — and a flat pill looks the same either
+/// way. macOS makes the first case common: a process without microphone
+/// permission is not refused, it is handed zeros.
+fn meter(
+    app: &AppHandle,
+    mic: mpsc::Receiver<Vec<f32>>,
+    level_chunk: usize,
+) -> mpsc::Receiver<(Instant, Vec<f32>)> {
+    let app = app.clone();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut blocks, mut loudest) = (0usize, 0f32);
+        for block in mic {
+            blocks += 1;
+            for piece in block.chunks(level_chunk) {
+                let level = live::rms(piece);
+                loudest = loudest.max(level);
+                let _ = app.emit("kotha://level", level);
+            }
+            if tx.send((Instant::now(), block)).is_err() {
+                break;
+            }
+        }
+        println!("meter   {blocks} blocks from the microphone, loudest level {loudest:.4}");
+        if blocks == 0 {
+            eprintln!("meter   no audio arrived at all — the input stream never delivered");
+        } else if loudest < 0.002 {
+            eprintln!(
+                "meter   the microphone delivered only silence. On macOS that is what a \
+                 missing microphone permission looks like: check System Settings → \
+                 Privacy & Security → Microphone for the app or terminal that launched Kotha"
+            );
+        }
+    });
+    rx
 }
 
 /// Transcribe one utterance, repair its English, and put it where the user

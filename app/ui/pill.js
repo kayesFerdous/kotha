@@ -100,11 +100,18 @@ function setState(next) {
     return;
   }
   clearTimeout(doneTimer);
+  const prev = root.dataset.state;
   root.dataset.state = next;
   label.textContent =
     { idle: "", listening: "Listening", thinking: "Transcribing", done: "Done" }[next];
 
-  if (next === "listening") drain();
+  /* A new dictation starts from a flat line. Coming back from `thinking` is
+     not a new dictation — the model was decoding one sentence while the user
+     spoke the next, and levels kept arriving the whole time (Rust emits them
+     from the microphone, not from the decode loop). Wiping the history here
+     would throw away the last two thirds of a second of real speech and make
+     the wave jump from a flat line to full height. */
+  if (next === "listening" && prev !== "thinking") drain();
   // The pill leaves on its own after a `done`; Rust does not have to say so.
   if (next === "done") doneTimer = setTimeout(() => setState("idle"), DONE_DWELL);
 }
