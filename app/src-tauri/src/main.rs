@@ -989,9 +989,10 @@ fn no_activate(w: &WebviewWindow) {
 ///     was created on. The hotkey is global, so the pill has to be able to
 ///     appear on whichever Space the user is on when they press it, over a
 ///     full-screen window, without dragging them somewhere else.
-///     `CanJoinAllSpaces` and `Stationary` say "follow the user, do not move
-///     them"; `FullScreenAuxiliary` is what permits it over a full-screen app
-///     at all.
+///     `CanJoinAllSpaces` says "follow the user, do not move them";
+///     `FullScreenAuxiliary` is what permits it over a full-screen app at
+///     all. The pair lives in `PILL_BEHAVIOUR`, with the story of the flag
+///     that used to be there too.
 ///
 /// Focus itself is handled a layer up, by the accessory activation policy in
 /// `setup` — see the note there. This function is only about *where* the pill
@@ -1016,7 +1017,7 @@ fn no_activate(w: &WebviewWindow) {
 /// the pill still works, it is just in the wrong place in the stack.
 #[cfg(target_os = "macos")]
 fn no_activate(w: &WebviewWindow) {
-    use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::{NSStatusWindowLevel, NSWindow};
 
     let ptr = match w.ns_window() {
         Ok(p) => p.cast::<NSWindow>(),
@@ -1033,14 +1034,29 @@ fn no_activate(w: &WebviewWindow) {
         return;
     };
 
-    win.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
+    win.setCollectionBehavior(PILL_BEHAVIOUR);
     win.setLevel(NSStatusWindowLevel);
     println!("window  status level, all spaces, over full screen");
 }
+
+/// Where the pill may appear: on every Space, and over a full-screen app.
+///
+/// `Stationary` used to be the third flag here, and it is gone on purpose.
+/// AppKit documents it as "unaffected by Exposé; stays visible and stationary,
+/// like the desktop window" — and the desktop is the one window that belongs
+/// to a single Space. The first macOS build showed the pill on the Space Kotha
+/// was launched from rather than the one the hotkey was pressed on, which is
+/// exactly what a window pinned to one Space does. Nothing here needs to
+/// survive Mission Control, so the flag whose only job was that is the one to
+/// drop. Without it the window gets `Transient` by default — "floats in
+/// spaces, hidden by Exposé" — which is what a HUD wants anyway.
+///
+/// One place, because it is applied twice: once at setup, and again on every
+/// show — see `raise_regardless` for why the second time is not redundant.
+#[cfg(target_os = "macos")]
+const PILL_BEHAVIOUR: objc2_app_kit::NSWindowCollectionBehavior =
+    objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllSpaces
+        .union(objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary);
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn no_activate(_: &WebviewWindow) {}
@@ -1070,12 +1086,25 @@ fn no_activate(_: &WebviewWindow) {}
 /// Re-applied on every show rather than set once, because it is an action, not
 /// a property: there is nothing to stay set.
 ///
+/// The level and the collection behaviour are re-asserted here too, just
+/// before the window is ordered in, even though `no_activate` set them at
+/// setup. Setup runs on a window that has never been on screen — AppKit has
+/// not yet given it a backing window, and the behaviour it carries is only
+/// handed to the window server when it first orders in. Setting it again with
+/// the window about to appear costs two calls and removes one untested
+/// assumption. `isOnActiveSpace` is logged on both sides of the ordering: for
+/// a hidden window it answers whether ordering it in *would* land on the
+/// Space the user is looking at, which is exactly the question. A `false`
+/// there with `CanJoinAllSpaces` set is AppKit ignoring the flag, and the log
+/// says so rather than leaving it to be noticed.
+///
 /// Safety: `NSWindow` is main-thread-only and the caller dispatches this
 /// through `run_on_main_thread`. The only unsafe step is trusting `ns_window()`
-/// for a window that exists, which it does, having just been shown.
+/// for a window that exists, which it does — it was fetched by label a moment
+/// ago.
 #[cfg(target_os = "macos")]
 fn raise_regardless(w: &WebviewWindow) {
-    use objc2_app_kit::NSWindow;
+    use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
 
     let Ok(ptr) = w.ns_window() else {
         eprintln!("window  no NSWindow to raise; the pill may stay behind the active app");
@@ -1086,8 +1115,41 @@ fn raise_regardless(w: &WebviewWindow) {
         return;
     };
 
+    let before = win.isOnActiveSpace();
+
+    // `CanJoinAllSpaces` alone was measured not to be enough. Kotha was
+    // launched from a terminal inside a full-screen app, the first dictation
+    // showed the pill there, and every dictation after that reported
+    // `on active Space: false` from another Space — before and after ordering
+    // in, with `CanJoinAllSpaces` set. A `FullScreenAuxiliary` window that has
+    // once been shown over a full-screen app stays attached to that Space
+    // when it is ordered out, and the all-Spaces flag does not detach it.
+    //
+    // `MoveToActiveSpace` is AppKit's instruction for exactly this: when the
+    // window is ordered in, bring it to the Space the user is on. It cannot
+    // be combined with `CanJoinAllSpaces` — they are alternatives — so it is
+    // held only across the ordering, and the all-Spaces behaviour goes back
+    // straight afterwards so that switching Space mid-dictation still takes
+    // the pill along.
+    win.setCollectionBehavior(
+        NSWindowCollectionBehavior::MoveToActiveSpace
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    win.setLevel(NSStatusWindowLevel);
     win.orderFrontRegardless();
-    println!("window  ordered front regardless (level {})", win.level());
+    let after = win.isOnActiveSpace();
+    win.setCollectionBehavior(PILL_BEHAVIOUR);
+    println!(
+        "window  ordered front regardless | level {} | behaviour {:#x} | on active Space: {before} before, {after} after",
+        win.level(),
+        win.collectionBehavior().bits()
+    );
+    if !after {
+        eprintln!(
+            "window  the pill is NOT on the active Space — it is showing on another desktop, \
+             even ordered in with MoveToActiveSpace; see raise_regardless"
+        );
+    }
 }
 
 /// Put the pill on screen, wherever the user's screen currently is.
@@ -1098,7 +1160,24 @@ fn show(app: &AppHandle) {
     let Some(w) = app.get_webview_window("pill") else {
         return;
     };
-    let _ = place(&w);
+    let _ = place(app, &w);
+
+    // `show()` alone leaves the pill behind the active application, and on a
+    // window that has never been on screen it is also the moment AppKit
+    // learns which Spaces the window belongs to. So the macOS ordering goes
+    // first, with the behaviour re-asserted in the same breath — see
+    // `raise_regardless`. Dispatched to the main thread because this runs on
+    // the worker, and `NSWindow` may only be touched from the main one; the
+    // `show()` below queues behind it on the same event loop, so the order
+    // holds.
+    #[cfg(target_os = "macos")]
+    {
+        let w2 = w.clone();
+        if let Err(e) = w.run_on_main_thread(move || raise_regardless(&w2)) {
+            eprintln!("window  could not reach the main thread to raise: {e}");
+        }
+    }
+
     let _ = w.show();
 
     // Click-through, so the pill is furniture and not an obstacle.
@@ -1111,17 +1190,6 @@ fn show(app: &AppHandle) {
     // main loop, where it cannot even unwind. Silent until it is fatal, and
     // worth reporting upstream: the code already has the Option in hand.
     let _ = w.set_ignore_cursor_events(true);
-
-    // `show()` alone leaves the pill behind the active application. See
-    // `raise_regardless`. Dispatched to the main thread because this runs on
-    // the worker, and `NSWindow` may only be touched from the main one.
-    #[cfg(target_os = "macos")]
-    {
-        let w2 = w.clone();
-        if let Err(e) = w.run_on_main_thread(move || raise_regardless(&w2)) {
-            eprintln!("window  could not reach the main thread to raise: {e}");
-        }
-    }
 
     // The property the whole feature rests on. Self-reported by the toolkit,
     // so it is evidence rather than proof, but a `true` here would be
@@ -1154,10 +1222,22 @@ fn hide_soon(app: &AppHandle, after: Duration) {
     });
 }
 
-/// Bottom centre of whichever monitor the window is currently on.
-fn place(w: &WebviewWindow) -> tauri::Result<()> {
-    let Some(monitor) = w.current_monitor()? else {
-        return Ok(());
+/// Bottom centre of the monitor the user is looking at.
+///
+/// "Looking at" is approximated by the mouse pointer. The honest answer would
+/// be the display holding the focused window's caret, and no toolkit will say
+/// which that is without the Accessibility API; the pointer is where the user
+/// last did something, and on one screen the two are the same screen. The
+/// window's own monitor is the fallback, and it is the wrong answer more often
+/// than it looks: a hidden window reports the display it was *last* on, which
+/// is wherever the previous dictation happened, not where this one is.
+fn place(app: &AppHandle, w: &WebviewWindow) -> tauri::Result<()> {
+    let monitor = match monitor_under_pointer(app) {
+        Some(m) => m,
+        None => match w.current_monitor()? {
+            Some(m) => m,
+            None => return Ok(()),
+        },
     };
     let screen = monitor.size();
     let origin = monitor.position();
@@ -1179,6 +1259,43 @@ fn place(w: &WebviewWindow) -> tauri::Result<()> {
     );
 
     w.set_position(PhysicalPosition::new(x, y))
+}
+
+/// The monitor the mouse pointer is on, if the toolkit can say.
+///
+/// tao hands the pointer back in physical pixels scaled by the *primary*
+/// display (`macos/util/mod.rs` `cursor_position`, and the same on X11), while
+/// `monitor_from_point` compares against display bounds in logical points
+/// (`macos/monitor.rs` `from_point`). Dividing by the primary scale is what
+/// makes the two agree; on a mixed-scale desk it is an approximation, but the
+/// primary is the one the pointer's units came from. Wayland reports (0, 0)
+/// for the pointer and cannot place windows anyway, so that exact answer is
+/// treated as "don't know".
+fn monitor_under_pointer(app: &AppHandle) -> Option<tauri::Monitor> {
+    let cursor = app.cursor_position().ok()?;
+    if cursor.x == 0.0 && cursor.y == 0.0 {
+        return None;
+    }
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    let monitor = app.monitor_from_point(cursor.x / scale, cursor.y / scale).ok().flatten();
+    match &monitor {
+        Some(m) => println!(
+            "place   pointer at ({:.0},{:.0}) -> monitor {}",
+            cursor.x,
+            cursor.y,
+            m.name().map(String::as_str).unwrap_or("(unnamed)")
+        ),
+        None => println!(
+            "place   pointer at ({:.0},{:.0}) is on no known monitor; using the window's own",
+            cursor.x, cursor.y
+        ),
+    }
+    monitor
 }
 
 /// The three ways text can leave Kotha, as they appear in the tray menu.
