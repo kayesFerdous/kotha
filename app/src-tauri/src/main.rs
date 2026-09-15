@@ -615,6 +615,18 @@ fn main() {
             settings_get,
             settings_set
         ])
+        // Closing the settings window hides it instead. A closed Tauri window
+        // is destroyed, and `show_settings` only ever shows the one declared in
+        // tauri.conf.json — so after the first close, "Settings…" found no
+        // window and did nothing until the app was restarted.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "settings" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(move |app| {
             // Kotha is a tray application, and on macOS that is a policy, not
             // a style. `Accessory` drops the Dock icon and the ⌘-Tab entry —
