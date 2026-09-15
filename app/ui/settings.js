@@ -90,14 +90,10 @@ const keys = (k) => k.split("+").map((x) => `<kbd>${esc(x)}</kbd>`).join(" + ");
  * order on screen is the order in the Rust constant — which for the hotkeys
  * means the default is first, and that is not an accident.
  *
- * `note` may return a second line for an option. It is how the text-output
- * group explains three routes that are otherwise three near-identical
- * sentences, without this function knowing anything about any of them.
- *
  * `html` says the labels carry markup. Only the hotkey group does, and only
  * because a key is drawn as <kbd>.
  */
-function group(id, options, chosen, { disabled = false, note = () => "", html = false } = {}) {
+function group(id, options, chosen, { disabled = false, html = false } = {}) {
   const box = document.getElementById(id);
   current[id] = chosen;
 
@@ -114,21 +110,11 @@ function group(id, options, chosen, { disabled = false, note = () => "", html = 
       input.checked = value === chosen;
       input.disabled = disabled;
 
-      const text = document.createElement("span");
       const name = document.createElement("span");
       name.className = "opt-name";
       name[html ? "innerHTML" : "textContent"] = label;
-      text.append(name);
 
-      const extra = note(value);
-      if (extra) {
-        const sub = document.createElement("span");
-        sub.className = "opt-note";
-        sub.textContent = extra;
-        text.append(sub);
-      }
-
-      row.append(input, text);
+      row.append(input, name);
       return row;
     })
   );
@@ -164,28 +150,14 @@ async function save(key, value) {
 function render(s) {
   kothaTheme(s.theme);
 
-  group("hotkey", s.hotkeys.map((k) => [k, keys(k)]), s.hotkey, {
-    html: true,
-    note: (k) =>
-      k === "Ctrl+Alt+Space"
-        ? "Often already taken \u2014 this is fcitx's and ibus's input-method switch, so a keyboard with Avro on it probably owns it."
-        : "",
-  });
+  group("hotkey", s.hotkeys.map((k) => [k, keys(k)]), s.hotkey, { html: true });
   const unbound = document.getElementById("hotkey-unbound");
   unbound.hidden = s.hotkeyBound;
   unbound.textContent =
     "Another application already has this key, so nothing is bound. " +
     "Pick a different one — until then, the tray icon's Dictate starts a dictation.";
 
-  group("paste", s.pasteModes, s.paste, {
-    disabled: s.pasteForced,
-    note: (mode) =>
-      ({
-        copy: "The text goes to the clipboard and you paste it yourself. Always works.",
-        paste: "Kotha types it at your cursor. On Wayland this needs the desktop's permission and may do nothing without it.",
-        portal: "Types it at your cursor through the desktop portal. Asks once, then remembers.",
-      }[mode] || ""),
-  });
+  group("paste", s.pasteModes, s.paste, { disabled: s.pasteForced });
   document.getElementById("paste-forced").hidden = !s.pasteForced;
   document.getElementById("paste-forced").textContent =
     "KOTHA_PASTE is set in the environment, so it is deciding this. Unset it to choose here.";
