@@ -85,7 +85,8 @@ Three choices, because desktops differ in what they allow:
 - **Clipboard only** — Kotha copies the text and you press paste. Works
   everywhere, asks for no permissions. This is the default.
 - **Paste at the cursor** — pastes it for you. On X11 this works everywhere. On
-  Wayland it reaches older-style windows only.
+  Wayland it reaches older-style windows only. On Windows it reaches every
+  window except ones running as administrator.
 - **Paste at the cursor (portal)** — pastes it for you in *every* window,
   including modern Wayland ones. Your desktop asks permission the first time.
   It only asks once.
@@ -96,11 +97,15 @@ will not see it again.
 ## Requirements
 
 - **Linux**, 64-bit. X11 or Wayland, KDE or GNOME
+- **Windows 10 or 11**, 64-bit — new, and not yet tried on a real machine
 - **~900 MB of disk** — 100 MB for the app, 778 MB for the model
 - **2 GB of free RAM** while dictating
 - **A CPU from roughly 2017 or later.** No graphics card needed
 
-macOS and Windows are not supported yet.
+macOS is not supported yet.
+
+The Windows installer is not code-signed yet, so Windows SmartScreen warns
+before it runs. Choose **More info**, then **Run anyway**.
 
 ### How fast is it
 

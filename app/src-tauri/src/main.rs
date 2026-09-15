@@ -44,6 +44,15 @@
 //!                anything else = clipboard only.
 //! ```
 
+// Windows only, and only in release: build Kotha.exe as a GUI program, not a
+// console one. Without it every launch from the Start menu opens a black
+// console window beside the tray icon, and closing that window kills Kotha.
+// Debug builds keep the console, which is where `cargo run` wants its log. The
+// price is that a release build starts with no stdout at all — see
+// `attach_console`, which gets the log back when Kotha is started from a
+// terminal.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -625,6 +634,7 @@ struct Session {
 }
 
 fn main() {
+    attach_console();
     prefer_x11();
 
     let (tx, rx) = mpsc::channel::<Cmd>();
@@ -637,12 +647,15 @@ fn main() {
     // second process also fights the first for the hotkey and adds a second
     // tray icon.
     //
-    // Linux only. A bundled macOS app is never started twice — LaunchServices
-    // hands the launch to the running copy as a Reopen event, handled at the
-    // bottom of this function. The plugin would also switch on a `syn` feature
-    // through zbus, which changes the build hash under ct2rs and costs a full
-    // CTranslate2 rebuild on the Mac for nothing. It must be the first plugin.
-    #[cfg(target_os = "linux")]
+    // Linux and Windows. A bundled macOS app is never started twice —
+    // LaunchServices hands the launch to the running copy as a Reopen event,
+    // handled at the bottom of this function. The plugin would also switch on a
+    // `syn` feature through zbus, which changes the build hash under ct2rs and
+    // costs a full CTranslate2 rebuild on the Mac for nothing. Windows has
+    // neither excuse: no zbus in the plugin there, and nothing like Reopen, so
+    // a second Kotha.exe really is a second process with a second tray icon.
+    // It must be the first plugin.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
         println!("launch  already running — opening Settings");
         show_settings(app);
@@ -856,6 +869,110 @@ fn prefer_x11() {
 
 #[cfg(not(target_os = "linux"))]
 fn prefer_x11() {}
+
+/// Give a release build on Windows its log back, when there is a terminal to
+/// give it to.
+///
+/// `windows_subsystem = "windows"` (top of this file) means Windows starts
+/// Kotha.exe with no console, so every `println!` and `eprintln!` in this app
+/// goes nowhere. That is right for a Start-menu launch and wrong for the one
+/// case the log exists for: somebody diagnosing a problem runs Kotha from
+/// PowerShell and needs to see it.
+///
+/// `AttachConsole(ATTACH_PARENT_PROCESS)` joins the console of whatever started
+/// Kotha, if that was a console program, and fails harmlessly if it was
+/// Explorer. It has to be the first thing `main` does, before anything prints.
+/// Output arrives after the prompt has already come back — a shell does not
+/// wait for a GUI program — which is untidy but complete.
+///
+/// ponytail: no log file. A launch from the Start menu still has nowhere to
+/// write, the same as a menu launch on Linux and macOS today.
+///
+/// **Unverified.** Written 2026-09-15 on a Mac; no Windows build has run it.
+#[cfg(target_os = "windows")]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    // Safety: no pointers. It attaches to the parent's console or returns 0,
+    // and 0 is the ordinary answer for a launch from Explorer.
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
+#[cfg(not(target_os = "windows"))]
+fn attach_console() {}
+
+/// Who has the foreground on Windows, as an address — a raw `HWND` is not
+/// `Send`, and this value has to cross to the main thread.
+#[cfg(target_os = "windows")]
+fn foreground_window() -> usize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    // Safety: no arguments; returns a window handle or null.
+    unsafe { GetForegroundWindow() as usize }
+}
+
+/// If showing the pill made it the foreground window, give the foreground back.
+///
+/// The pill must never take focus, and on Windows only its *first* appearance
+/// is sure not to. `set_focusable(false)` makes tao create it
+/// `WS_EX_NOACTIVATE`, and `"focus": false` makes the first show a
+/// `SW_SHOWNOACTIVATE` — but that second part is a one-shot marker, cleared the
+/// first time it is used (tao 0.35.3, `windows/window_state.rs:329`). Every
+/// later `show()` is a plain `SW_SHOW`, which Windows documents as "activates
+/// the window". Whether `WS_EX_NOACTIVATE` wins against that is the kind of
+/// thing to watch rather than argue about, so this checks, every time.
+///
+/// If the pill is now the foreground window, the window that had it a moment
+/// ago gets it back. Kotha is the foreground process at that instant, which is
+/// what Windows requires before it lets a program pass the foreground on. The
+/// editor sees focus leave and come back, seconds before anything is pasted.
+///
+/// Both outcomes are logged. "unchanged" on a real machine means the style was
+/// enough and this function has nothing to do; a hand-back line means it was
+/// not.
+///
+/// ponytail: undoing the activation rather than preventing it. Preventing it
+/// means showing the window through Win32 directly, and tao keeps its own
+/// record of whether the window is visible that nothing would update — so its
+/// next `hide()` would see no change and leave the pill on screen.
+///
+/// **Unverified.** Written 2026-09-15 on a Mac; no Windows build has run it.
+#[cfg(target_os = "windows")]
+fn give_back_foreground(w: &WebviewWindow, before: usize) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+
+    let pill = match w.hwnd() {
+        Ok(h) => h.0 as usize,
+        Err(e) => {
+            eprintln!("window  no HWND for the pill ({e}); cannot check whether it took focus");
+            return;
+        }
+    };
+    // Safety: no arguments.
+    let now = unsafe { GetForegroundWindow() } as usize;
+    if now != pill {
+        println!("window  foreground unchanged by show — the pill did not take focus");
+        return;
+    }
+    if before == 0 || before == pill {
+        eprintln!(
+            "window  the pill took the foreground, and nothing had it before — \
+             there is no window to hand it back to"
+        );
+        return;
+    }
+    // Safety: `before` is a handle GetForegroundWindow returned a moment ago.
+    // If that window has closed since, the call fails and says so; it cannot
+    // reach any other window.
+    let handed_back = unsafe { SetForegroundWindow(before as HWND) } != 0;
+    if handed_back {
+        println!("window  the pill took the foreground — handed it back to the window that had it");
+    } else {
+        eprintln!(
+            "window  the pill took the foreground and Windows refused to hand it back; \
+             a paste will land in the pill, not in your window"
+        );
+    }
+}
 
 /// Start or stop a dictation. The hotkey and the tray both land here.
 ///
@@ -1139,7 +1256,9 @@ fn meter(
             eprintln!(
                 "meter   the microphone delivered only silence. On macOS that is what a \
                  missing microphone permission looks like: check System Settings → \
-                 Privacy & Security → Microphone for the app or terminal that launched Kotha"
+                 Privacy & Security → Microphone for the app or terminal that launched Kotha. \
+                 On Windows, check Settings → Privacy & security → Microphone → \
+                 Let desktop apps access your microphone"
             );
         }
     });
@@ -1442,7 +1561,21 @@ fn show(app: &AppHandle) {
         }
     }
 
+    // Windows: note who has the foreground, so it can be handed back if
+    // showing the pill takes it. See `give_back_foreground`. Dispatched like
+    // the macOS raise, so it runs on the main thread after the show has.
+    #[cfg(target_os = "windows")]
+    let before = foreground_window();
+
     let _ = w.show();
+
+    #[cfg(target_os = "windows")]
+    {
+        let w2 = w.clone();
+        if let Err(e) = w.run_on_main_thread(move || give_back_foreground(&w2, before)) {
+            eprintln!("window  could not reach the main thread to check focus: {e}");
+        }
+    }
 
     // Click-through, so the pill is furniture and not an obstacle.
     //

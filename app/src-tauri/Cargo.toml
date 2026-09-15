@@ -77,11 +77,28 @@ tauri-plugin-autostart = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"
 
-# Linux only: a second launch opens Settings in the running copy instead of
-# starting another. macOS gets the same from LaunchServices for free (see the
+# Linux and Windows: a second launch opens Settings in the running copy instead
+# of starting another. macOS gets the same from LaunchServices for free (see the
 # Reopen handler in main.rs), and on that target this plugin's zbus would turn
-# on a `syn` feature under ct2rs and force a full CTranslate2 rebuild.
+# on a `syn` feature under ct2rs and force a full CTranslate2 rebuild. The
+# plugin's Windows half depends on `windows-sys` alone, so that reason does not
+# reach Windows.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+# Windows only, for three calls: `AttachConsole`, so a release build started
+# from a terminal still logs (it is built without a console — see the top of
+# main.rs), and `GetForegroundWindow` / `SetForegroundWindow`, so a pill that
+# takes the foreground hands it straight back. The raw `-sys` crate rather than
+# `windows`, and 0.60 because the single-instance plugin already builds exactly
+# that version: no new crate in the tree, three more features on one already
+# there.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # macOS only, and for the same job `gtk` does on Linux: stopping the pill from
 # becoming the active window. Tauri exposes `ns_window()` as a raw pointer and

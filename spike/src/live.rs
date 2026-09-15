@@ -88,6 +88,21 @@ const PASTE_MODIFIER: Key = Key::Meta; // ⌘V
 #[cfg(not(target_os = "macos"))]
 const PASTE_MODIFIER: Key = Key::Control; // Ctrl+V
 
+/// The V in that chord — on Windows as the physical key, not the character.
+///
+/// `Key::Unicode('v')` asks the *active keyboard layout* which key types a "v".
+/// On a Bengali layout there may be no such key, and enigo's Windows backend
+/// then falls back to typing the character as text (`win_impl.rs`, "Falling
+/// back to entering it as text"). Ctrl held over typed text is not a paste, so
+/// the dictation would reach the clipboard and stop there — on exactly the
+/// machines Kotha is for. `Key::V` is the virtual key `VK_V`, which is the
+/// same key whatever layout is active, and it is what applications read a
+/// Ctrl+V shortcut from. Windows only, because enigo only has it there.
+#[cfg(target_os = "windows")]
+const PASTE_KEY: Key = Key::V;
+#[cfg(not(target_os = "windows"))]
+const PASTE_KEY: Key = Key::Unicode('v');
+
 /// How long the target application gets to read the clipboard before the
 /// previous contents go back.
 ///
@@ -527,12 +542,24 @@ fn connect_keyboard(
     Enigo::new(&Settings::default()).map(|k| (k, "quartz — reaches every window"))
 }
 
+/// Windows has one route and, unlike macOS, no permission to ask for.
+///
+/// enigo calls `SendInput`, which reaches every window with one exception that
+/// Windows enforces and never reports: a program cannot send input to a window
+/// running at a higher integrity level. An editor or terminal started "as
+/// administrator" receives nothing, `SendInput` still says it succeeded, and
+/// `deliver` then puts the previous clipboard back — so the text is left only
+/// in the log. Named in the log line, because nothing else will name it.
+///
+/// **Unverified.** Written 2026-09-15 on a Mac; no Windows build has run it.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn connect_keyboard(
     _portal: bool,
     _restore_token: Option<String>,
 ) -> Result<(Enigo, &'static str), enigo::NewConError> {
-    Enigo::new(&Settings::default()).map(|k| (k, "native"))
+    Enigo::new(&Settings::default()).map(|k| {
+        (k, "SendInput — reaches every window except ones running as administrator")
+    })
 }
 
 /// The line that turns a refusal into something the user can act on.
@@ -564,7 +591,7 @@ fn permission_hint(_: &enigo::NewConError) -> Option<&'static str> {
 
 fn paste_chord(kb: &mut Enigo) -> Result<(), enigo::InputError> {
     kb.key(PASTE_MODIFIER, Direction::Press)?;
-    let pressed = kb.key(Key::Unicode('v'), Direction::Click);
+    let pressed = kb.key(PASTE_KEY, Direction::Click);
     // Release the modifier even if the keystroke failed. A stuck Ctrl would
     // break the user's keyboard until they pressed and released it themselves.
     kb.key(PASTE_MODIFIER, Direction::Release)?;

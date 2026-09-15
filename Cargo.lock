@@ -2741,6 +2741,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "ureq",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
