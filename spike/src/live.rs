@@ -540,18 +540,20 @@ fn connect_keyboard(
 /// "The application does not have the permission to simulate input" is true and
 /// useless: it does not say which permission, where it lives, or what to do
 /// afterwards. On macOS all three have specific answers, and the third one is
-/// the trap — `Output::open` runs again only when the tray's Text output
-/// setting *changes* (`main.rs`, the `chosen != mode` guard), so granting
-/// Accessibility while Kotha is running changes nothing until the mode is
-/// picked again. A user who grants the permission, sees no difference, and
+/// the trap — `Output::open` runs again only when the Text output setting
+/// *changes* (`main.rs`, the `chosen != mode` guard, checked at the top of a
+/// dictation), so granting Accessibility while Kotha is running changes nothing.
+/// Re-picking the same option in the settings window is a no-op, and switching
+/// away and back between dictations is too, so the only reliable instruction is
+/// a restart. A user who grants the permission, sees no difference, and
 /// concludes the app is broken is a user lost to a missing sentence.
 #[cfg(target_os = "macos")]
 fn permission_hint(e: &enigo::NewConError) -> Option<&'static str> {
     matches!(e, enigo::NewConError::NoPermission).then_some(
         "        macOS calls it Accessibility. If the system did not just ask,          open
         System Settings › Privacy & Security › Accessibility and          switch Kotha on.
-        Then choose Text output in the tray menu          again — Kotha only retries when
-        that setting changes.",
+        Then quit Kotha from the tray and          open it again — it does not notice
+        the permission while it is running.",
     )
 }
 
