@@ -61,6 +61,13 @@ ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"
 serde_json = "1"
 
+# Start at login, from the settings window. On macOS it writes a LaunchAgent
+# plist into ~/Library/LaunchAgents — no Automation prompt, unlike its
+# AppleScript mode — and on Linux a .desktop file in ~/.config/autostart.
+# Checked with `cargo tree -p ct2rs` before and after: it leaves the macOS tree
+# under CTranslate2 untouched, so it costs no C++ rebuild.
+tauri-plugin-autostart = "2"
+
 # Linux only, and for exactly one call. `set_focusable(false)` maps to GTK's
 # `accept_focus`, which stops the pill taking *keyboard* focus but does not stop
 # KWin making it the *active window* — and that is what dims the window behind

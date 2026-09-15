@@ -61,6 +61,7 @@ use kotha_spike::{suspicious_fusion, Engine};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Where the model lives.
@@ -382,6 +383,11 @@ fn settings_get(app: AppHandle) -> serde_json::Value {
 
         "theme": theme_choice(&path),
         "themes": THEMES,
+
+        // Asked of the system each time, not remembered: the user can remove
+        // the login item themselves, and the window must show what is true.
+        "autostart": if autostart_on(&app) { "on" } else { "off" },
+        "autostarts": AUTOSTART,
     })
 }
 
@@ -446,6 +452,22 @@ fn settings_set(app: AppHandle, key: String, value: String) -> Result<(), String
             if !THEMES.iter().any(|(id, _)| *id == value) {
                 return Err(format!("{value} is not a theme"));
             }
+        }
+        "autostart" => {
+            let login = app.autolaunch();
+            let applied = match value.as_str() {
+                "on" => login.enable(),
+                "off" => login.disable(),
+                _ => return Err(format!("{value} is not a start-at-login choice")),
+            };
+            if let Err(e) = applied {
+                eprintln!("login   could not turn start at login {value} ({e})");
+                return Err(format!("Could not change start at login ({e})."));
+            }
+            println!("login   start at login {value}");
+            // The login item is the record. Nothing goes into settings.json,
+            // so the two can never disagree.
+            return Ok(());
         }
         other => return Err(format!("{other} is not a setting")),
     }
@@ -627,6 +649,10 @@ fn main() {
     }));
 
     builder
+        // Start at login. Read and written only through `settings_get` and
+        // `settings_set` — the system's own login item is the record, never a
+        // copy in settings.json that could disagree with it.
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
         .invoke_handler(tauri::generate_handler![
             start_download,
@@ -1551,6 +1577,20 @@ const PASTE_MODES: [(&str, &str); 3] = [
 /// `settings.js` — so the stylesheet has two palettes and not three.
 const THEMES: [(&str, &str); 3] =
     [("system", "Match the system"), ("dark", "Dark"), ("light", "Light")];
+
+/// Start at login, as the settings window offers it. Off is the default: an
+/// app that adds itself to login without being asked is an app people remove.
+const AUTOSTART: [(&str, &str); 2] =
+    [("on", "Open Kotha when I log in"), ("off", "Only when I open it")];
+
+/// Whether the system will start Kotha at login. A failure to ask reads as
+/// off and is logged, rather than showing a choice the app cannot vouch for.
+fn autostart_on(app: &AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or_else(|e| {
+        eprintln!("login   could not read start at login ({e})");
+        false
+    })
+}
 
 /// One file, one JSON object. The hotkey and the microphone add keys here.
 fn settings_path(app: &AppHandle) -> PathBuf {

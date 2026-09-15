@@ -163,6 +163,7 @@ function render(s) {
     "KOTHA_PASTE is set in the environment, so it is deciding this. Unset it to choose here.";
 
   group("theme", s.themes, s.theme);
+  group("autostart", s.autostarts, s.autostart);
 }
 
 /* ------------------------------------------------------------------ Tauri */
@@ -196,6 +197,8 @@ if (window.__TAURI__) {
     pasteForced: false,
     theme: "system",
     themes: [["system", "Match the system"], ["dark", "Dark"], ["light", "Light"]],
+    autostart: "off",
+    autostarts: [["on", "Open Kotha when I log in"], ["off", "Only when I open it"]],
   };
 
   get = async () => state;
@@ -213,7 +216,7 @@ if (window.__TAURI__) {
    rows are replaced whenever a group is drawn, and a listener on the box
    survives that. Added before the first render, so nothing has to be rewired
    afterwards. */
-for (const id of ["hotkey", "paste", "theme"]) {
+for (const id of ["hotkey", "paste", "theme", "autostart"]) {
   document.getElementById(id).addEventListener("change", (e) => save(id, e.target.value));
 }
 
