@@ -70,6 +70,12 @@ serde_json = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"
 
+# Linux only: a second launch opens Settings in the running copy instead of
+# starting another. macOS gets the same from LaunchServices for free (see the
+# Reopen handler in main.rs), and on that target this plugin's zbus would turn
+# on a `syn` feature under ct2rs and force a full CTranslate2 rebuild.
+tauri-plugin-single-instance = "2"
+
 # macOS only, and for the same job `gtk` does on Linux: stopping the pill from
 # becoming the active window. Tauri exposes `ns_window()` as a raw pointer and
 # nothing above it, so the three AppKit calls in `no_activate` have to be made

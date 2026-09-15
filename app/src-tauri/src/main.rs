@@ -607,7 +607,26 @@ fn main() {
 
     let (tx, rx) = mpsc::channel::<Cmd>();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Launching Kotha while it is already running opens Settings in the copy
+    // that is running. Without this a second launch looks broken: there is no
+    // Dock icon and no window, so nothing visible happens — and on Linux a
+    // second process also fights the first for the hotkey and adds a second
+    // tray icon.
+    //
+    // Linux only. A bundled macOS app is never started twice — LaunchServices
+    // hands the launch to the running copy as a Reopen event, handled at the
+    // bottom of this function. The plugin would also switch on a `syn` feature
+    // through zbus, which changes the build hash under ct2rs and costs a full
+    // CTranslate2 rebuild on the Mac for nothing. It must be the first plugin.
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        println!("launch  already running — opening Settings");
+        show_settings(app);
+    }));
+
+    builder
         .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
         .invoke_handler(tauri::generate_handler![
             start_download,
@@ -759,8 +778,19 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Kotha failed to start");
+        .build(tauri::generate_context!())
+        .expect("Kotha failed to start")
+        .run(|_app, _event| {
+            // Opening Kotha.app from Finder, Spotlight or Launchpad while it
+            // is already running does not start a second copy: macOS sends
+            // the running one `applicationShouldHandleReopen`. There is no
+            // Dock icon to bring forward, so Settings is what answers it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                println!("launch  already running — opening Settings");
+                show_settings(_app);
+            }
+        });
 }
 
 /// Ask GTK for the X11 backend on Linux, before it initialises.
