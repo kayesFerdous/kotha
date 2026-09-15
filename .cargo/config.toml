@@ -1,0 +1,23 @@
+# Windows only: link the C runtime statically — every Rust crate and every C++
+# library under them.
+#
+# CTranslate2 insists on it: ct2rs builds it with `static_crt(true)`, which is
+# /MT, and warns when this flag is missing. The other two C++ libraries under
+# it do not insist on anything. oneDNN is built through cmake-rs, which hands
+# CMake the flags the `cc` crate picks, and `cc` picks /MT only when Rust's
+# `crt-static` is on (cc 1.2, `-MT` vs `-MD`); sentencepiece-sys checks for
+# `crt-static` by name. So without this, oneDNN and sentencepiece are /MD next
+# to CTranslate2's /MT, and MSVC will not link the two into one binary
+# (LNK2038, "mismatch detected for 'RuntimeLibrary'").
+#
+# It also agrees with Tauri. `tauri build` sets STATIC_VCRUNTIME, and
+# tauri-build then links the static C library and vcruntime (libcmt,
+# libvcruntime) against the system's Universal CRT (ucrt.lib) — which is what
+# /MT objects expect to find.
+#
+# OpenMP is the one runtime this cannot make static: MSVC has none. See the
+# "Windows runtime DLLs" step in .github/workflows/release.yml.
+#
+# Keyed to the target triple, so macOS and Linux never read it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -69,6 +69,40 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: brew install libomp
 
+      # Kotha.exe links the C runtime statically (.cargo/config.toml), but it
+      # cannot link OpenMP that way: MSVC has no static OpenMP, and oneDNN's CPU
+      # runtime defaults to it. (CTranslate2 itself is built without OpenMP on
+      # Windows — ct2rs only turns it on for Linux.) That leaves vcomp140.dll,
+      # which itself needs vcruntime140.dll, and a clean Windows install has
+      # neither. If the dependency report below shows no vcomp140.dll, all
+      # three can go.
+      #
+      # tauri.windows.conf.json bundles them next to Kotha.exe, which is the
+      # first place Windows looks for a DLL. This copies them out of the
+      # runner's own Visual Studio, so they come from the same toolset as the
+      # compiler.
+      #
+      # Searched for rather than spelled out: windows-latest has already moved
+      # from VS 2022 to VS 2026 under this workflow, and the toolset number is
+      # part of the path.
+      - name: Windows runtime DLLs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcomp = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -Filter vcomp140.dll |
+            Where-Object { $_.FullName -match '\\x64\\Microsoft\.VC\d+\.OpenMP\\' -and $_.FullName -notmatch 'onecore|debug_nonredist' } |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $vcomp) { throw "vcomp140.dll not found under $vs\VC\Redist\MSVC" }
+          $crt = Get-ChildItem (Split-Path $vcomp.DirectoryName) -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+          if (-not $crt) { throw "no Microsoft.VC*.CRT folder beside $($vcomp.DirectoryName)" }
+          $out = 'app/src-tauri/windows-runtime'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item $vcomp.FullName $out
+          Copy-Item "$($crt.FullName)\vcruntime140.dll", "$($crt.FullName)\vcruntime140_1.dll" $out
+          Write-Host "from $($vcomp.DirectoryName) and $($crt.FullName)"
+          Get-ChildItem $out | Format-Table Name, Length
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -95,6 +129,23 @@ jobs:
           # variable not found" and leaves the updater unable to tell how the
           # app was installed.
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      # What Kotha.exe needs at run time, written into the log. A DLL missing
+      # from the bundle makes an installer that succeeds and a program that will
+      # not start, and this list is the one place that shows before a user
+      # finds out. Never fails the job: it is a report, not a gate.
+      - name: Windows DLL dependencies
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match '\\Hostx64\\x64\\' } | Select-Object -Last 1
+          foreach ($f in 'target/x86_64-pc-windows-msvc/release/kotha.exe', 'app/src-tauri/windows-runtime/vcomp140.dll') {
+            Write-Host "== $f"
+            & $dumpbin.FullName /nologo /dependents $f
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()

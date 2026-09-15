@@ -27,6 +27,10 @@ spike/mel_dump.bin
 spike/matched_baseline.json
 spike/decode_393.txt
 __pycache__/
+
+# Visual C++ runtime DLLs, copied in by the Windows CI leg for bundling. See
+# the "Windows runtime DLLs" step in .github/workflows/release.yml.
+app/src-tauri/windows-runtime/
 *.pyc
 
 # Session handoff notes — PLAN.md is the durable copy
