@@ -45,7 +45,7 @@ Everything else lives in **Settings**, from the tray icon.
 **macOS** and **Linux** — one line, either one:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/v0.1.0/packaging/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/main/packaging/install.sh | bash
 ```
 
 It picks the build for your machine, checks it against a SHA-256 pinned in this

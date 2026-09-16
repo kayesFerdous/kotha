@@ -2,7 +2,7 @@
 #
 # Kotha — install the prebuilt app.
 #
-#   curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/v0.1.0/packaging/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/main/packaging/install.sh | bash
 #
 # Works on macOS (Apple Silicon and Intel) and on Linux (Arch, Debian and
 # everything else, in that order of comfort). Re-running it upgrades in place.
@@ -63,7 +63,7 @@ usage() {
   cat <<'EOF'
 Kotha — install the prebuilt app.
 
-  curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/v0.1.0/packaging/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/main/packaging/install.sh | bash
 
 Works on macOS (Apple Silicon and Intel) and on Linux (Arch, Debian and
 everything else, in that order of comfort). Re-running it upgrades in place.
@@ -237,7 +237,11 @@ install_arch() {
     ok "using the PKGBUILD beside this script"
   else
     say "Fetching the PKGBUILD"
-    fetch "https://raw.githubusercontent.com/$REPO/v$VERSION/packaging/PKGBUILD" "$dir/PKGBUILD"
+    # main, not the v$VERSION tag. The tag names the commit the binaries were
+    # built from and does not move; the recipe and the checksums are repository
+    # state that gets corrected *after* a tag is cut, which is how the stale sum
+    # this guard exists for came about. VERSION below is what pins the download.
+    fetch "https://raw.githubusercontent.com/$REPO/main/packaging/PKGBUILD" "$dir/PKGBUILD"
   fi
 
   # The two files pin the same .deb and are edited by hand at different times.
