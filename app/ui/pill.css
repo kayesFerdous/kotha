@@ -518,6 +518,12 @@ body.setup .meter::after {
 }
 
 body.setup .note { font-size: 13px; color: var(--text-dim); }
+
+/* The first-run window's one question, sitting above the group it labels.
+   Not a <legend>: a fieldset would bring its own box and border to undo, and
+   this needs to read as the sentence before the choice. */
+body.setup .ask { margin-bottom: 9px; }
+body.setup #output { margin: 22px 0; }
 body.setup .note.bad { color: var(--alert); }
 
 /* Three phases, one attribute on <body>, same idea as the pill's data-state:
@@ -612,14 +618,14 @@ body.settings h2 {
 
 /* The group. One hairline-separated stack, so the options read as a set of
    alternatives rather than as several unrelated switches. */
-body.settings .options {
+body:is(.settings, .setup) .options {
   border: 1px solid var(--hairline);
   border-radius: 11px;
   overflow: hidden;
   background: var(--surface);
 }
 
-body.settings .opt {
+body:is(.settings, .setup) .opt {
   display: flex;
   align-items: center;
   gap: 11px;
@@ -627,20 +633,20 @@ body.settings .opt {
   cursor: pointer;
 }
 
-body.settings .opt + .opt { border-top: 1px solid var(--hairline); }
-body.settings .opt:hover { background: var(--surface-lit); }
-body.settings .options:has(:checked) .opt:has(:checked) { background: var(--surface-lit); }
+body:is(.settings, .setup) .opt + .opt { border-top: 1px solid var(--hairline); }
+body:is(.settings, .setup) .opt:hover { background: var(--surface-lit); }
+body:is(.settings, .setup) .options:has(:checked) .opt:has(:checked) { background: var(--surface-lit); }
 
 /* `accent-color` is the whole of the radio's styling. A hand-drawn one would
    have to reimplement the focus ring, the checked state and the platform's
    own idea of what a radio looks like. */
-body.settings .opt input {
+body:is(.settings, .setup) .opt input {
   margin: 0;
   accent-color: var(--alert);
   flex: none;
 }
 
-body.settings .opt-name { display: block; }
+body:is(.settings, .setup) .opt-name { display: block; }
 
 /* A `<kbd>` inside an option name, for the hotkey group. Shares the setup
    window's look; the two windows show the same keys. */
@@ -657,10 +663,10 @@ body.settings kbd {
 /* A group the app is not actually obeying — an environment variable has taken
    it over, or the hotkey failed to bind. Disabled and captioned, because
    showing a choice that would not take effect is worse than showing none. */
-body.settings .opt input:disabled { cursor: default; }
-body.settings .options:has(input:disabled) { opacity: 0.55; }
-body.settings .options:has(input:disabled) .opt { cursor: default; }
-body.settings .options:has(input:disabled) .opt:hover { background: none; }
+body:is(.settings, .setup) .opt input:disabled { cursor: default; }
+body:is(.settings, .setup) .options:has(input:disabled) { opacity: 0.55; }
+body:is(.settings, .setup) .options:has(input:disabled) .opt { cursor: default; }
+body:is(.settings, .setup) .options:has(input:disabled) .opt:hover { background: none; }
 
 body.settings .warn {
   display: flex;

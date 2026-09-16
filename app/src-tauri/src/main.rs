@@ -402,6 +402,11 @@ fn settings_get(app: AppHandle) -> serde_json::Value {
 
         "paste": paste_setting(&app),
         "pasteModes": PASTE_MODES,
+        // Whether anyone has actually answered, as opposed to being handed the
+        // `copy` default. The first-run window asks the question once and needs
+        // to tell the two apart: it makes its recommendation real by saving it,
+        // and must not overwrite a user who deliberately chose the clipboard.
+        "pasteChosen": setting(&path, "paste").is_some(),
         // When the environment forced it, the window shows what was forced and
         // disables the controls, rather than offering a click with no effect.
         "pasteForced": paste_env().is_some(),

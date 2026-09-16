@@ -46,6 +46,21 @@
     <!-- Written by setup.js, because only Rust knows which key is bound —
          and whether one is bound at all. -->
     <p id="how">Press the hotkey anywhere and say something.</p>
+
+    <!-- The second question this window asks, and the reason it asks it here:
+         the sentence above is a promise about where the text goes, and the
+         app cannot keep it while the text output is still the clipboard.
+         Asked once, at the one moment the user is already answering setup
+         questions, rather than left to be discovered under Settings.
+
+         Rendered by setup.js from the same Rust constant the settings window
+         uses, so the two cannot offer different routes. Hidden entirely when
+         KOTHA_PASTE has already decided. -->
+    <div id="output" hidden>
+      <p class="ask">Where should the text go?</p>
+      <div class="options" id="paste"></div>
+    </div>
+
     <p class="note">Kotha stays in the tray. You can close this window.</p>
   </div>
 
