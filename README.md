@@ -32,6 +32,8 @@ That is one sentence, written the way you would write it yourself.
 press F9  →  speak  →  press F9 again  →  the text is at your cursor
 ```
 
+(On macOS the default is **⌥⇧D**, because F9 there is Next Track.)
+
 A small pill appears while you talk, showing that it is listening. Each pause
 in your speech closes a chunk, and that chunk is transcribed while you keep
 going — so the text arrives as you speak, not all at once at the end.
@@ -40,20 +42,43 @@ Everything else lives in **Settings**, from the tray icon.
 
 ## Installing
 
-**Arch Linux** and derivatives (Manjaro, EndeavourOS, CachyOS):
+**macOS** and **Linux** — one line, either one:
 
 ```bash
-yay -S kotha-bin
+curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/v0.1.0/packaging/install.sh | bash
 ```
 
-**Debian, Ubuntu, Mint, Pop!_OS** — download `Kotha_0.1.0_amd64.deb` from the
-[latest release](https://github.com/kayesFerdous/kotha/releases/latest), then:
+It picks the build for your machine, checks it against a SHA-256 pinned in this
+repository, installs it, and tells you what to do next. Read it before you run
+it if you would rather — it is one file,
+[`packaging/install.sh`](packaging/install.sh), and it explains itself as it
+goes.
 
-```bash
-sudo apt install ./Kotha_0.1.0_amd64.deb
-```
+What it saves you, per platform:
 
-Then launch **Kotha** from your application menu.
+- **macOS** — the Gatekeeper detour. Kotha is signed but not notarised, so a dmg
+  downloaded in a browser is refused with *"Apple could not verify Kotha is free
+  of malware"* and has to be let through by hand in System Settings. A dmg
+  fetched with `curl` is never quarantined, so the dialog does not happen. The
+  script runs `codesign --verify --deep --strict` on the app instead, which is
+  the check that dialog stands in for.
+- **Arch** and derivatives (Manjaro, EndeavourOS, CachyOS) — the missing
+  package. There is no `kotha-bin` in the AUR, so the script hands the release
+  `.deb` to a PKGBUILD and runs `makepkg -si`. Pacman ends up owning the files,
+  and `pacman -R kotha-bin` removes them.
+- **Debian, Ubuntu, Mint, Pop!_OS** — nothing much; it runs `apt` for you.
+- **Anything else** (Fedora, openSUSE, Void) — unpacks the AppImage under
+  `~/.local`, with a menu entry. `--appimage` forces this route anywhere.
+
+**Windows 10 or 11** — download `Kotha_0.1.0_x64_en-US.msi` from the
+[latest release](https://github.com/kayesFerdous/kotha/releases/latest). It is
+not code-signed yet, so SmartScreen warns before it runs: choose **More info**,
+then **Run anyway**.
+
+By hand instead? Every bundle is on that same release page — two `.dmg`s, one
+per Mac architecture, plus `.deb`, `.AppImage` and `.msi`.
+
+Then launch **Kotha**. On macOS it lives in the menu bar, not the Dock.
 
 The first time it runs it asks before downloading the speech model — 778 MB,
 once, and it shows you the progress. Nothing works until that finishes, and
@@ -61,14 +86,15 @@ nothing needs the network afterwards.
 
 ## Using it
 
-**Press F9 to start talking. Press it again to stop.**
+**Press F9 to start talking. Press it again to stop.** On macOS that is **⌥⇧D**
+instead.
 
 The tray icon has three items — **Dictate** (same as pressing F9),
 **Settings…**, and **Quit**. Everything you can change is in Settings:
 
 | Setting | What it does |
 |---|---|
-| **Hotkey** | Change the key, if F9 clashes with something you use |
+| **Hotkey** | Change the key, if the default clashes with something you use |
 | **Text output** | How the text reaches you — see below |
 | **Appearance** | Dark, light, or follow your desktop |
 
@@ -86,7 +112,9 @@ Three choices, because desktops differ in what they allow:
   everywhere, asks for no permissions. This is the default.
 - **Paste at the cursor** — pastes it for you. On X11 this works everywhere. On
   Wayland it reaches older-style windows only. On Windows it reaches every
-  window except ones running as administrator.
+  window except ones running as administrator. On macOS it reaches every window,
+  once you switch Kotha on in **System Settings › Privacy & Security ›
+  Accessibility** — and you do not need to restart it after granting that.
 - **Paste at the cursor (portal)** — pastes it for you in *every* window,
   including modern Wayland ones. Your desktop asks permission the first time.
   It only asks once.
@@ -96,16 +124,12 @@ will not see it again.
 
 ## Requirements
 
+- **macOS 11 or later** — Apple Silicon or Intel. Only tried on macOS 26 so far
 - **Linux**, 64-bit. X11 or Wayland, KDE or GNOME
 - **Windows 10 or 11**, 64-bit — new, and not yet tried on a real machine
 - **~900 MB of disk** — 100 MB for the app, 778 MB for the model
 - **2 GB of free RAM** while dictating
 - **A CPU from roughly 2017 or later.** No graphics card needed
-
-macOS is not supported yet.
-
-The Windows installer is not code-signed yet, so Windows SmartScreen warns
-before it runs. Choose **More info**, then **Run anyway**.
 
 ### How fast is it
 
@@ -132,6 +156,8 @@ visible misspelling is easier to fix than a confident wrong word.
 ~/.config/app.kotha/settings.json      hotkey, text output, theme
 ~/.local/share/app.kotha/              the downloaded model
 ```
+
+On macOS those are under `~/Library/Application Support/app.kotha/` instead.
 
 Deleting the model directory makes Kotha offer to download it again.
 

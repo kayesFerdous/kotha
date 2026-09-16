@@ -1,16 +1,23 @@
 # Maintainer: Kayes Ferdous <kayesfardows@gmail.com>
 #
-# This is the AUR recipe for the ready-built Kotha. It downloads the .deb from
-# the GitHub release and unpacks it — Arch and Debian want the same files in the
-# same places, so there is no second artifact to build and no second thing to
-# get wrong.
+# The recipe for the ready-built Kotha. It downloads the .deb from the GitHub
+# release and unpacks it — Arch and Debian want the same files in the same
+# places, so there is no second artifact to build and no second thing to get
+# wrong.
+#
+# It is written as an AUR recipe and is not in the AUR. `packaging/install.sh`
+# is what reaches Arch users instead: it fetches this file and runs
+# `makepkg -si`, so pacman owns the install exactly as `yay -S kotha-bin`
+# would have left it. That script pins the same checksum and refuses to run
+# when the two disagree, which is the one way this file goes wrong.
 #
 # There is no `kotha` source package on purpose. Building from source compiles
 # CTranslate2 and oneDNN, which is 15-30 minutes on a fast desktop, and nobody
 # installing a dictation app wants to wait for that.
 #
-# To update: bump pkgver, run `updpkgsums`, regenerate .SRCINFO with
-# `makepkg --printsrcinfo > .SRCINFO`, then commit and push.
+# To update: bump pkgver, run `updpkgsums`, and bump the matching VERSION and
+# SHA_DEB in `packaging/install.sh`. If it ever does reach the AUR, .SRCINFO
+# comes from `makepkg --printsrcinfo > .SRCINFO`.
 
 pkgname=kotha-bin
 pkgver=0.1.0
@@ -53,7 +60,7 @@ optdepends=(
 # The model is not in here. Kotha downloads its 778 MB on first run, into
 # ~/.local/share/app.kotha/, and asks before it starts.
 source=("$url/releases/download/v$pkgver/Kotha_${pkgver}_amd64.deb")
-sha256sums=('90b41b7ab524c5eccc053f30a6f134e815dea74b50f076017dda91d792dc9e47')
+sha256sums=('48bdba9ddbe3dbb0d94ee775305ec849e832a90a965ca4396b3b996134c253fb')
 
 package() {
   # makepkg's bsdtar already split the .deb into its three members; the files
