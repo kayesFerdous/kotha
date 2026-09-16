@@ -97,14 +97,25 @@ trap cleanup EXIT
 
 # -------------------------------------------------------------- the download
 
+# Named, because the two ways this fails are both invisible otherwise: a
+# release that has not been published yet and a repository that is still
+# private both answer 404, and `set -e` alone would end the script in silence.
 fetch() { # url dest
+  local got=0
   if command -v curl >/dev/null; then
-    curl -fL --progress-bar "$1" -o "$2"
+    curl -fL --progress-bar "$1" -o "$2" || got=$?
   elif command -v wget >/dev/null; then
-    wget -q --show-progress -O "$2" "$1"
+    wget -q --show-progress -O "$2" "$1" || got=$?
   else
     die "Neither curl nor wget is installed."
   fi
+  [[ $got -eq 0 ]] || die "Could not download
+
+      $1
+
+    If that is a 404, the v$VERSION release may not be published yet.
+    Check https://github.com/$REPO/releases and try again when it is.
+    Otherwise it is the network between here and GitHub."
 }
 
 sha256_of() {
