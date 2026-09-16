@@ -12,6 +12,7 @@
 #   ./setup.sh                 # everything
 #   ./setup.sh --skip-model    # toolchain only
 #   ./setup.sh --bench         # sweep decode thread counts, then stop
+#   ./setup.sh --release       # refresh the installer's checksums, then stop
 #   ./setup.sh --force         # ignore the battery guard
 
 set -euo pipefail
@@ -27,12 +28,16 @@ MODEL_FILES=(model.bin tokenizer.json vocabulary.json config.json preprocessor_c
 FORCE=0
 SKIP_MODEL=0
 BENCH=0
+RELEASE=0
+RELEASE_TAG=""
 for arg in "$@"; do
   case "$arg" in
     --force)      FORCE=1 ;;
     --skip-model) SKIP_MODEL=1 ;;
     --bench)      BENCH=1 ;;
-    -h|--help)    sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --release)    RELEASE=1 ;;
+    --release=*)  RELEASE=1; RELEASE_TAG="${arg#*=}" ;;
+    -h|--help)    sed -n '3,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
@@ -56,6 +61,146 @@ require_power() {
     This step is a long compile or a large download and will drain the laptop.
     Plug in and re-run, or pass --force to override."
   fi
+}
+
+# ------------------------------------------------------------------ release
+#
+# What this answers: which checksums `packaging/install.sh` and
+# `packaging/PKGBUILD` must carry for the release that is about to go out.
+#
+# It exists because the alternative is typing them, and typing them is how the
+# PKGBUILD spent a release cycle pinning the previous build's .deb — a number
+# nobody can eyeball, in a file nobody opens, failing only on an Arch machine
+# at `makepkg` time.
+#
+# It hashes what GitHub will actually hand a user: the assets come back *down*
+# from the release rather than being read out of target/, so an upload that
+# truncated or clobbered the wrong file is caught here instead of by whoever
+# installs it first. That is a ~160 MB download.
+#
+#   ./setup.sh --release             # the version in tauri.conf.json
+#   ./setup.sh --release=v0.1.0      # a specific tag
+#
+# Run it once the assets are on the release and *before* publishing, then
+# commit and push. install.sh is fetched from main, so main is where the sums
+# have to be by the time anyone runs it.
+
+sha256_of() {
+  if command -v shasum >/dev/null; then shasum -a 256 "$1" | awk '{print $1}'
+  else sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+release_sums() {
+  command -v gh >/dev/null ||
+    die "The GitHub CLI is not installed — this reads the release through it.
+    brew install gh   (or: pacman -S github-cli), then gh auth login"
+
+  local tag="$RELEASE_TAG"
+  if [[ -z $tag ]]; then
+    tag="v$(python3 -c "import json; print(json.load(open('$ROOT/app/src-tauri/tauri.conf.json'))['version'])")"
+    ok "tag from tauri.conf.json: $tag"
+  fi
+  local ver="${tag#v}"
+
+  say "Release $tag"
+  local draft
+  draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null) ||
+    die "No release $tag. Push the tag and let the Release workflow finish, or
+    upload the bundles to a draft, then run this again."
+  if [[ $draft == "true" ]]; then
+    ok "draft — the right time to be doing this"
+  else
+    warn "already published. The sums below still describe it, but anyone who
+    ran the installer before now got whatever install.sh said at the time."
+  fi
+  git rev-parse "$tag^{commit}" >/dev/null 2>&1 &&
+    ok "tag points at $(git log -1 --format='%h %s' "$tag^{commit}")"
+
+  local dir
+  dir=$(mktemp -d)
+  say "Downloading the assets (~160 MB)"
+  gh release download "$tag" --dir "$dir" --clobber ||
+    die "Could not download the assets of $tag. They are left in $dir."
+
+  # By pattern, not by constructed name: if a bundle is missing or renamed,
+  # that is a fact about the release worth stopping on, not something to
+  # paper over with a filename that happens to compile.
+  pick() {
+    local f
+    f=$(find "$dir" -maxdepth 1 -name "$1" | head -1)
+    [[ -n $f ]] ||
+      die "No asset matching '$1' on $tag.
+    Present: $(ls "$dir" | tr '\n' ' ')
+    If a platform failed in CI, fix that before releasing — a missing bundle
+    here is a route in install.sh that cannot work."
+    echo "$f"
+  }
+
+  local f_arm f_x64 f_deb f_app
+  f_arm=$(pick '*aarch64.dmg')
+  f_x64=$(pick '*x64.dmg')
+  f_deb=$(pick '*.deb')
+  f_app=$(pick '*.AppImage')
+  pick '*.msi' >/dev/null   # not pinned — Windows has no script — but a release without it is wrong
+
+  say "Hashing"
+  local s_arm s_x64 s_deb s_app
+  s_arm=$(sha256_of "$f_arm"); ok "$(basename "$f_arm")  $s_arm"
+  s_x64=$(sha256_of "$f_x64"); ok "$(basename "$f_x64")  $s_x64"
+  s_deb=$(sha256_of "$f_deb"); ok "$(basename "$f_deb")  $s_deb"
+  s_app=$(sha256_of "$f_app"); ok "$(basename "$f_app")  $s_app"
+
+  say "Writing them into packaging/"
+  python3 - "$ROOT" "$ver" "$s_arm" "$s_x64" "$s_deb" "$s_app" <<'PYEOF'
+import pathlib, re, sys
+root, ver, arm, x64, deb, app = sys.argv[1:7]
+changed = []
+
+def sub(path, pattern, repl, label):
+    p = pathlib.Path(root) / path
+    s = p.read_text()
+    new, n = re.subn(pattern, repl, s, count=1, flags=re.M)
+    if n != 1:
+        sys.exit(f"  could not find {label} in {path} — has it been renamed?")
+    if new != s:
+        changed.append(f"{path}: {label}")
+        p.write_text(new)
+
+sub('packaging/install.sh', r'^VERSION=.*$',      f'VERSION={ver}',            'VERSION')
+sub('packaging/install.sh', r'^SHA_DMG_ARM64=.*$', f'SHA_DMG_ARM64={arm}',     'SHA_DMG_ARM64')
+sub('packaging/install.sh', r'^SHA_DMG_X64=.*$',   f'SHA_DMG_X64={x64}',       'SHA_DMG_X64')
+sub('packaging/install.sh', r'^SHA_DEB=.*$',       f'SHA_DEB={deb}',           'SHA_DEB')
+sub('packaging/install.sh', r'^SHA_APPIMAGE=.*$',  f'SHA_APPIMAGE={app}',      'SHA_APPIMAGE')
+sub('packaging/PKGBUILD',   r'^pkgver=.*$',        f'pkgver={ver}',            'pkgver')
+sub('packaging/PKGBUILD',   r"^sha256sums=.*$",    f"sha256sums=('{deb}')",    'sha256sums')
+
+print('\n'.join('  changed  ' + c for c in changed) if changed
+      else '  nothing changed — they already matched')
+PYEOF
+
+  # The check install.sh performs on an Arch machine, performed here instead,
+  # where it is still cheap to fix.
+  grep -q "$s_deb" "$ROOT/packaging/PKGBUILD" && grep -q "$s_deb" "$ROOT/packaging/install.sh" ||
+    die "The two files still disagree about the .deb. Look at them by hand."
+  ok "install.sh and PKGBUILD agree"
+
+  rm -rf "$dir"
+
+  say "Next"
+  cat <<EOF
+
+  Check it, then put it on main before anyone can run it:
+
+    git diff packaging/
+    git commit -am "Pin the installer to $tag"
+    git push origin main
+
+  Then publish:
+
+    gh release edit $tag --draft=false
+
+EOF
 }
 
 # -------------------------------------------------------------------- bench
@@ -175,6 +320,11 @@ $(( t_cores - p_cores )) efficiency core(s)"
 
 EOF
 }
+
+if [[ $RELEASE -eq 1 ]]; then
+  release_sums
+  exit 0
+fi
 
 if [[ $BENCH -eq 1 ]]; then
   bench
