@@ -150,7 +150,9 @@ fn fetch_model(dir: &Path, mut progress: impl FnMut(u64, u64)) -> anyhow::Result
         .into();
 
     let manifest: serde_json::Value = http
-        .get(format!("https://huggingface.co/api/models/{HF_REPO}/tree/main"))
+        .get(format!(
+            "https://huggingface.co/api/models/{HF_REPO}/tree/main"
+        ))
         .call()
         .context("could not reach HuggingFace for the model manifest")?
         .body_mut()
@@ -179,7 +181,10 @@ fn fetch_model(dir: &Path, mut progress: impl FnMut(u64, u64)) -> anyhow::Result
     }
 
     std::fs::create_dir_all(dir)?;
-    let already: u64 = want.iter().map(|(n, s, _)| on_disk(&dir.join(n)).min(*s)).sum();
+    let already: u64 = want
+        .iter()
+        .map(|(n, s, _)| on_disk(&dir.join(n)).min(*s))
+        .sum();
     progress(already, total);
     println!(
         "model   {} of {} MB to fetch into {}",
@@ -281,7 +286,10 @@ fn download(app: &AppHandle) {
         // different amounts of noise.
         if done == total || done.saturating_sub(last_ui) >= 1 << 20 {
             last_ui = done;
-            let _ = app.emit("kotha://download", serde_json::json!({ "done": done, "total": total }));
+            let _ = app.emit(
+                "kotha://download",
+                serde_json::json!({ "done": done, "total": total }),
+            );
         }
         if done == total || done.saturating_sub(last_log) >= 16 << 20 {
             last_log = done;
@@ -291,7 +299,10 @@ fn download(app: &AppHandle) {
 
     if let Err(e) = result {
         eprintln!("model   download failed: {e:#}");
-        let _ = app.emit("kotha://download", serde_json::json!({ "error": format!("{e:#}") }));
+        let _ = app.emit(
+            "kotha://download",
+            serde_json::json!({ "error": format!("{e:#}") }),
+        );
     }
 }
 
@@ -314,7 +325,12 @@ fn show_setup(app: &AppHandle) {
 #[tauri::command]
 fn start_download(app: AppHandle) {
     let session = app.state::<Session>();
-    if session.tx.lock().map(|tx| tx.send(Cmd::Fetch).is_ok()).unwrap_or(false) {
+    if session
+        .tx
+        .lock()
+        .map(|tx| tx.send(Cmd::Fetch).is_ok())
+        .unwrap_or(false)
+    {
         return;
     }
     eprintln!("worker is gone — the download cannot start");
@@ -429,7 +445,8 @@ fn settings_set(app: AppHandle, key: String, value: String) -> Result<(), String
             if value == previous {
                 return Ok(());
             }
-            Shortcut::from_str(&value).map_err(|e| format!("{value} is not a usable shortcut ({e})"))?;
+            Shortcut::from_str(&value)
+                .map_err(|e| format!("{value} is not a usable shortcut ({e})"))?;
 
             let gs = app.global_shortcut();
             let _ = gs.unregister_all();
@@ -506,7 +523,9 @@ fn stream_to(
     from: u64,
     on_bytes: &mut impl FnMut(u64),
 ) -> anyhow::Result<()> {
-    let mut req = http.get(format!("https://huggingface.co/{HF_REPO}/resolve/main/{name}"));
+    let mut req = http.get(format!(
+        "https://huggingface.co/{HF_REPO}/resolve/main/{name}"
+    ));
     if from > 0 {
         req = req.header("Range", format!("bytes={from}-"));
     }
@@ -665,8 +684,14 @@ fn main() {
         // Start at login. Read and written only through `settings_get` and
         // `settings_set` — the system's own login item is the record, never a
         // copy in settings.json that could disagree with it.
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
-        .manage(Session { listening: AtomicBool::new(false), tx: Mutex::new(tx) })
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .manage(Session {
+            listening: AtomicBool::new(false),
+            tx: Mutex::new(tx),
+        })
         .invoke_handler(tauri::generate_handler![
             start_download,
             hotkey_label,
@@ -988,7 +1013,11 @@ fn toggle(app: &AppHandle) {
     }
     let cmd = if was_listening { Cmd::Stop } else { Cmd::Start };
     println!("toggle  {}", if was_listening { "stop" } else { "start" });
-    let sent = session.tx.lock().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false);
+    let sent = session
+        .tx
+        .lock()
+        .map(|tx| tx.send(cmd).is_ok())
+        .unwrap_or(false);
     if !sent {
         eprintln!("worker is gone — dictation is not available");
     }
@@ -1029,7 +1058,9 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
         if !model_ready(&model_dir(&app)) {
             println!("model   not downloaded yet — opening the first-run window");
             show_setup(&app);
-            app.state::<Session>().listening.store(false, Ordering::SeqCst);
+            app.state::<Session>()
+                .listening
+                .store(false, Ordering::SeqCst);
             continue;
         }
 
@@ -1052,7 +1083,9 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
             // pill rather than only on stderr because nobody running the
             // bundled app is watching stderr.
             eprintln!("dictation failed: {e:#}");
-            app.state::<Session>().listening.store(false, Ordering::SeqCst);
+            app.state::<Session>()
+                .listening
+                .store(false, Ordering::SeqCst);
             let _ = app.emit("kotha://state", "error");
             // Must outlast DWELL.error in pill.js, or the window is pulled
             // out from under the message while it is still being read.
@@ -1073,7 +1106,12 @@ fn dictate(
     // The microphone first: a missing one should cost a millisecond, not four
     // seconds and 1.4 GB. `Microphone` is not Send under ALSA, which is the
     // other reason all of this lives on one thread.
-    let Microphone { stream, blocks, mut intake, level_chunk } = live::open_microphone()?;
+    let Microphone {
+        stream,
+        blocks,
+        mut intake,
+        level_chunk,
+    } = live::open_microphone()?;
     let blocks = meter(app, blocks, level_chunk);
     show(app);
     let _ = app.emit("kotha://state", "listening");
@@ -1091,7 +1129,11 @@ fn dictate(
                 dir.display()
             ))
         })?);
-        println!("model   {} threads, loaded in {:.1}s", threads, t.elapsed().as_secs_f64());
+        println!(
+            "model   {} threads, loaded in {:.1}s",
+            threads,
+            t.elapsed().as_secs_f64()
+        );
     }
     let engine = engine.as_ref().expect("just loaded");
 
@@ -1173,9 +1215,18 @@ fn dictate(
         }
     }
 
-    app.state::<Session>().listening.store(false, Ordering::SeqCst);
+    app.state::<Session>()
+        .listening
+        .store(false, Ordering::SeqCst);
     let _ = app.emit("kotha://state", if n > 0 { "done" } else { "idle" });
-    hide_soon(app, if n > 0 { HIDE_AFTER } else { Duration::from_millis(400) });
+    hide_soon(
+        app,
+        if n > 0 {
+            HIDE_AFTER
+        } else {
+            Duration::from_millis(400)
+        },
+    );
     println!(
         "stopped on {stopped_by} after {n} utterance(s); loop fell up to {:.1}s behind the microphone\n",
         worst_lag.as_secs_f64()
@@ -1288,7 +1339,10 @@ fn deliver(
     let took = t.elapsed().as_secs_f64();
     let text = text.trim();
 
-    println!("[{n}] {secs:.1}s audio → {took:.1}s decode ({:.2}x realtime)", secs / took);
+    println!(
+        "[{n}] {secs:.1}s audio → {took:.1}s decode ({:.2}x realtime)",
+        secs / took
+    );
     if text.is_empty() {
         println!("    (nothing said)\n");
         return Ok(false);
@@ -1334,8 +1388,10 @@ fn no_activate(w: &WebviewWindow) {
     use gtk::prelude::GtkWindowExt;
     match w.gtk_window() {
         Ok(g) => g.set_type_hint(gtk::gdk::WindowTypeHint::Notification),
-        Err(e) => eprintln!("window  could not set the type hint ({e}); \
-                             the pill may dim the window behind it"),
+        Err(e) => eprintln!(
+            "window  could not set the type hint ({e}); \
+                             the pill may dim the window behind it"
+        ),
     }
 }
 
@@ -1392,15 +1448,19 @@ fn no_activate(w: &WebviewWindow) {
     let ptr = match w.ns_window() {
         Ok(p) => p.cast::<NSWindow>(),
         Err(e) => {
-            eprintln!("window  no NSWindow ({e}); the pill may hide under \
-                       full-screen apps");
+            eprintln!(
+                "window  no NSWindow ({e}); the pill may hide under \
+                       full-screen apps"
+            );
             return;
         }
     };
 
     let Some(win) = (unsafe { ptr.as_ref() }) else {
-        eprintln!("window  NSWindow pointer was null; the pill may hide under \
-                   full-screen apps");
+        eprintln!(
+            "window  NSWindow pointer was null; the pill may hide under \
+                   full-screen apps"
+        );
         return;
     };
 
@@ -1594,9 +1654,10 @@ fn show(app: &AppHandle) {
     println!("window  shown, focused = {:?}", w.is_focused());
     println!(
         "window  visible = {:?} | outer_position = {:?} | outer_size = {:?}",
-        w.is_visible(), w.outer_position(), w.outer_size()
+        w.is_visible(),
+        w.outer_position(),
+        w.outer_size()
     );
-
 }
 
 /// Hide the pill once the UI has finished saying goodbye.
@@ -1679,7 +1740,10 @@ fn monitor_under_pointer(app: &AppHandle) -> Option<tauri::Monitor> {
         .flatten()
         .map(|m| m.scale_factor())
         .unwrap_or(1.0);
-    let monitor = app.monitor_from_point(cursor.x / scale, cursor.y / scale).ok().flatten();
+    let monitor = app
+        .monitor_from_point(cursor.x / scale, cursor.y / scale)
+        .ok()
+        .flatten();
     match &monitor {
         Some(m) => println!(
             "place   pointer at ({:.0},{:.0}) -> monitor {}",
@@ -1695,26 +1759,44 @@ fn monitor_under_pointer(app: &AppHandle) -> Option<tauri::Monitor> {
     monitor
 }
 
-/// The three ways text can leave Kotha, as they appear in the tray menu.
+/// The ways text can leave Kotha, as they appear in the settings window.
 ///
 /// The id is what lands in `settings.json`, so a hand-edited file and a menu
 /// click cannot mean different things.
+///
+/// **`portal` is Linux's, and this list is cfg'd for the same reason `HOTKEYS`
+/// below is.** It names libei through the XDG RemoteDesktop portal, one of
+/// three real routes there. macOS has exactly one route — Quartz `CGEvent` —
+/// and Windows one as well, so on those platforms `connect_keyboard` ignores
+/// the flag outright; its parameter is spelled `_portal`. Offered anyway, it
+/// read as the option that works and left "Paste at the cursor" looking like
+/// the one that does not.
+#[cfg(target_os = "linux")]
 const PASTE_MODES: [(&str, &str); 3] = [
     ("copy", "Clipboard only"),
     ("paste", "Paste at the cursor"),
     ("portal", "Paste at the cursor (portal)"),
 ];
 
+#[cfg(not(target_os = "linux"))]
+const PASTE_MODES: [(&str, &str); 2] =
+    [("copy", "Clipboard only"), ("paste", "Paste at the cursor")];
+
 /// The three themes. `system` follows the desktop; the other two override it.
 /// Resolved to a concrete light or dark in the UI — see the head of
 /// `settings.js` — so the stylesheet has two palettes and not three.
-const THEMES: [(&str, &str); 3] =
-    [("system", "Match the system"), ("dark", "Dark"), ("light", "Light")];
+const THEMES: [(&str, &str); 3] = [
+    ("system", "Match the system"),
+    ("dark", "Dark"),
+    ("light", "Light"),
+];
 
 /// Start at login, as the settings window offers it. Off is the default: an
 /// app that adds itself to login without being asked is an app people remove.
-const AUTOSTART: [(&str, &str); 2] =
-    [("on", "Open Kotha when I log in"), ("off", "Only when I open it")];
+const AUTOSTART: [(&str, &str); 2] = [
+    ("on", "Open Kotha when I log in"),
+    ("off", "Only when I open it"),
+];
 
 /// Whether the system will start Kotha at login. A failure to ask reads as
 /// off and is logged, rather than showing a choice the app cannot vouch for.
@@ -1727,7 +1809,10 @@ fn autostart_on(app: &AppHandle) -> bool {
 
 /// One file, one JSON object. The hotkey and the microphone add keys here.
 fn settings_path(app: &AppHandle) -> PathBuf {
-    app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from(".")).join("settings.json")
+    app.path()
+        .app_config_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("settings.json")
 }
 
 /// `KOTHA_PASTE`, if it is set, as a mode id.
@@ -1738,15 +1823,19 @@ fn settings_path(app: &AppHandle) -> PathBuf {
 /// offering a choice that would not take effect.
 fn paste_env() -> Option<&'static str> {
     match std::env::var("KOTHA_PASTE").ok()?.as_str() {
-        "portal" => Some("portal"),
-        "1" | "true" => Some("paste"),
+        // Linux's third route. Everywhere else it means the one route there
+        // is, so that the window is never forced to a mode it cannot list.
+        "portal" if cfg!(target_os = "linux") => Some("portal"),
+        "portal" | "1" | "true" => Some("paste"),
         _ => Some("copy"),
     }
 }
 
 /// The chosen mode: the environment, then the file, then clipboard-only.
 fn paste_setting(app: &AppHandle) -> String {
-    paste_env().map(str::to_string).unwrap_or_else(|| paste_choice(&settings_path(app)))
+    paste_env()
+        .map(str::to_string)
+        .unwrap_or_else(|| paste_choice(&settings_path(app)))
 }
 
 fn settings_at(path: &Path) -> Option<serde_json::Value> {
@@ -1775,8 +1864,30 @@ fn save_setting(path: &Path, key: &str, value: &str) {
 /// mode `Output::open` has never heard of.
 fn paste_choice(path: &Path) -> String {
     setting(path, "paste")
+        .map(one_route)
         .filter(|m| PASTE_MODES.iter().any(|(id, _)| id == m))
         .unwrap_or_else(|| "copy".into())
+}
+
+/// `portal`, on a platform that has one route, reads as `paste`.
+///
+/// It arrives from a settings file written by an older build, by hand, or by
+/// syncing a Linux home directory. Letting it fall through to the `copy`
+/// default would take a user who had chosen to paste at the cursor and put
+/// them back on the clipboard without saying so — the quiet regression this
+/// whole change exists to remove.
+#[cfg(not(target_os = "linux"))]
+fn one_route(mode: String) -> String {
+    if mode == "portal" {
+        "paste".into()
+    } else {
+        mode
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn one_route(mode: String) -> String {
+    mode
 }
 
 /// The chosen theme, or `system`. Junk falls back rather than reaching the UI,
@@ -1986,12 +2097,28 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(paste_choice(&path), "copy", "no file means clipboard only");
 
+        // `portal` is Linux's route. Everywhere else the same file must read
+        // as `paste` — the one route those platforms have — and emphatically
+        // not fall back to `copy`, which would silently stop the pasting.
         save_setting(&path, "paste", "portal");
-        assert_eq!(paste_choice(&path), "portal");
-        assert_eq!(paste_flags("portal"), (true, true));
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(paste_choice(&path), "portal");
+            assert_eq!(paste_flags("portal"), (true, true));
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            paste_choice(&path),
+            "paste",
+            "a saved portal must not read as copy"
+        );
 
         std::fs::write(&path, r#"{"paste":"telepathy"}"#).unwrap();
-        assert_eq!(paste_choice(&path), "copy", "an unknown mode must fall back");
+        assert_eq!(
+            paste_choice(&path),
+            "copy",
+            "an unknown mode must fall back"
+        );
 
         // Not an object: `v["paste"] = ...` would panic on this.
         std::fs::write(&path, "3").unwrap();
@@ -2001,14 +2128,21 @@ mod tests {
         // Two settings share the file, so writing one must not lose the other.
         save_setting(&path, "hotkey", "F9");
         assert_eq!(hotkey_choice(&path), "F9");
-        assert_eq!(paste_choice(&path), "paste", "saving the hotkey dropped the paste mode");
+        assert_eq!(
+            paste_choice(&path),
+            "paste",
+            "saving the hotkey dropped the paste mode"
+        );
 
         // An unbindable string must fall back to the default rather than leave
         // the app with nothing registered at all.
         std::fs::write(&path, r#"{"hotkey":"Ctrl+Banana"}"#).unwrap();
         assert_eq!(hotkey_choice(&path), HOTKEYS[0]);
         for k in HOTKEYS {
-            assert!(Shortcut::from_str(k).is_ok(), "{k} is not a usable accelerator");
+            assert!(
+                Shortcut::from_str(k).is_ok(),
+                "{k} is not a usable accelerator"
+            );
         }
 
         std::fs::remove_file(&path).ok();
@@ -2022,13 +2156,21 @@ mod tests {
         let path = std::env::temp_dir().join("kotha-theme-test.json");
         std::fs::remove_file(&path).ok();
 
-        assert_eq!(theme_choice(&path), "system", "no file means follow the desktop");
+        assert_eq!(
+            theme_choice(&path),
+            "system",
+            "no file means follow the desktop"
+        );
 
         save_setting(&path, "theme", "light");
         assert_eq!(theme_choice(&path), "light");
 
         std::fs::write(&path, r#"{"theme":"neon"}"#).unwrap();
-        assert_eq!(theme_choice(&path), "system", "an unknown theme must fall back");
+        assert_eq!(
+            theme_choice(&path),
+            "system",
+            "an unknown theme must fall back"
+        );
 
         // Three settings share the file. Writing any one must not lose the
         // others — the same clobbering check as above, at the width it is now.
@@ -2036,10 +2178,16 @@ mod tests {
         for (k, v) in [("paste", "portal"), ("hotkey", "F9"), ("theme", "dark")] {
             save_setting(&path, k, v);
         }
+        #[cfg(target_os = "linux")]
         assert_eq!(paste_choice(&path), "portal");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(paste_choice(&path), "paste");
         assert_eq!(hotkey_choice(&path), "F9");
         assert_eq!(theme_choice(&path), "dark");
-        assert_eq!(THEMES[0].0, "system", "theme.js defaults to system; so must Rust");
+        assert_eq!(
+            THEMES[0].0, "system",
+            "theme.js defaults to system; so must Rust"
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -2068,7 +2216,10 @@ mod tests {
         let whole = dir.join("whole");
         stream_to(&http, "config.json", &whole, 0, &mut |_| {}).unwrap();
         let expected = std::fs::read(&whole).unwrap();
-        assert!(expected.len() > 200, "config.json came back suspiciously short");
+        assert!(
+            expected.len() > 200,
+            "config.json came back suspiciously short"
+        );
 
         // Half of it on disk, as if a connection had dropped there.
         let half = expected.len() / 2;
@@ -2076,10 +2227,21 @@ mod tests {
         std::fs::write(&partial, &expected[..half]).unwrap();
 
         let mut reported = Vec::new();
-        stream_to(&http, "config.json", &partial, half as u64, &mut |n| reported.push(n)).unwrap();
+        stream_to(&http, "config.json", &partial, half as u64, &mut |n| {
+            reported.push(n)
+        })
+        .unwrap();
 
-        assert_eq!(std::fs::read(&partial).unwrap(), expected, "resume produced different bytes");
-        assert_eq!(reported.first(), Some(&(half as u64)), "resume did not start from the offset");
+        assert_eq!(
+            std::fs::read(&partial).unwrap(),
+            expected,
+            "resume produced different bytes"
+        );
+        assert_eq!(
+            reported.first(),
+            Some(&(half as u64)),
+            "resume did not start from the offset"
+        );
         assert_eq!(
             reported.last(),
             Some(&(expected.len() as u64)),
