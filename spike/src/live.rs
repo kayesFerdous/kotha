@@ -360,6 +360,49 @@ impl Output {
         borrowed.give_back(cb, text);
     }
 
+    /// Try the paste route again for a session that asked for it and did not
+    /// get it. Returns whether it is open now.
+    ///
+    /// **This is what removes "quit and reopen Kotha" from the setup.**
+    /// Accessibility is granted in System Settings while Kotha is already
+    /// running, and the answer enigo gave when the output first opened used to
+    /// stand for the life of the process: the user granted the permission,
+    /// watched the text keep going to the clipboard anyway, and had to work
+    /// out on their own that a restart was the missing step. Nothing said so.
+    ///
+    /// Silent, because it runs before every dictation. `Enigo::new` is itself
+    /// what raises the Accessibility dialog, and raising that once per
+    /// dictation would be worse than the restart it replaces — so asking is
+    /// left to the places that ask on purpose, and this only notices the
+    /// answer once it exists.
+    ///
+    /// macOS only. On Linux the grant *is* a dialog — the portal has no silent
+    /// path, so a retry before every dictation would be a dialog before every
+    /// dictation. On Windows there is nothing to ask for. Both keep whatever
+    /// they opened with.
+    #[cfg(target_os = "macos")]
+    pub fn retry_paste(&mut self) -> bool {
+        if self.keyboard.is_some() {
+            return true;
+        }
+        let quiet = Settings { open_prompt_to_get_permissions: false, ..Settings::default() };
+        match Enigo::new(&quiet) {
+            Ok(k) => {
+                // Said out loud: this is the moment the app starts behaving
+                // differently, and the log is where that gets explained.
+                println!("output  Accessibility granted — pasting at the cursor from here on");
+                self.keyboard = Some(k);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn retry_paste(&mut self) -> bool {
+        self.keyboard.is_some()
+    }
+
     /// Whether text actually reaches the cursor, rather than stopping at the
     /// clipboard.
     ///

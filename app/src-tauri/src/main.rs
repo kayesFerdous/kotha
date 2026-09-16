@@ -1079,6 +1079,17 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
             out = open_output(&app, &mode);
         }
 
+        // A route that asked to paste and did not get it is worth asking about
+        // again, because the reason is usually a permission the user is in the
+        // middle of granting. macOS hands out Accessibility from System
+        // Settings while Kotha is already running, and without this the app
+        // would keep copying to the clipboard until it was quit and reopened —
+        // a step nothing on screen ever mentioned. Silent and cheap; see
+        // `Output::retry_paste`.
+        if paste_flags(&mode).0 && !out.pastes() {
+            out.retry_paste();
+        }
+
         if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
             // Never leave the pill up on a failure: the user pressed a key and
             // deserves to be told, not to be left looking at a frozen pill.
