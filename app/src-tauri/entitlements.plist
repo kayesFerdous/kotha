@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Signing the bundle turns on the hardened runtime, and the hardened
+	     runtime denies the microphone to any process that does not ask for it
+	     here. Denies it silently: CoreAudio hands back a stream of zeros and
+	     no prompt is ever shown, so the app looks like it is listening and
+	     simply cannot hear. NSMicrophoneUsageDescription in Info.plist is the
+	     sentence in the dialog; this is what lets the dialog happen at all. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
