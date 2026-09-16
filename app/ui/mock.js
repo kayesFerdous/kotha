@@ -9,8 +9,8 @@
    compile away, and a CSS change should not cost ten minutes. Anything you
    can see here is what you will get there.
 
-     space        cycle idle → listening → thinking → done → error
-     1 2 3 4 5    jump straight to a state
+     space        cycle idle → listening → thinking → done → copied → error
+     1 2 3 4 5 6  jump straight to a state
      m            toggle between fake speech and silence while listening,
                   which is the difference between a lit glyph and the five
                   resting bars an armed, silent pill shows
@@ -73,6 +73,11 @@ if (window.__TAURI__) {
     ["thinking", 2400],
     ["done", 1400],
     ["idle", 700],
+    // The clipboard-only finish. In the loop for the same reason `error` is:
+    // it depends on how the text output opened, which a browser has no way to
+    // arrange, and it is the state most likely to be got wrong unseen.
+    ["copied", 2000],
+    ["idle", 700],
     // The failure is in the loop because it is a state someone has to be able
     // to look at, and it is the one state a browser cannot provoke for real.
     ["error", 2600],
@@ -91,7 +96,7 @@ if (window.__TAURI__) {
     if (e.key === " ") {
       e.preventDefault();
       setState(STATES[(at + 1) % STATES.length]);
-    } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
+    } else if (["1", "2", "3", "4", "5", "6"].includes(e.key)) {
       setState(STATES[Number(e.key) - 1]);
     } else if (e.key.toLowerCase() === "m") {
       speaking = !speaking;

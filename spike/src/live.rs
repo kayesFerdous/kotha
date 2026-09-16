@@ -359,6 +359,18 @@ impl Output {
         std::thread::sleep(PASTE_SETTLE);
         borrowed.give_back(cb, text);
     }
+
+    /// Whether text actually reaches the cursor, rather than stopping at the
+    /// clipboard.
+    ///
+    /// The route as it opened, not the setting that asked for it. `copy` gives
+    /// the same answer here as a `paste` that could not connect — Accessibility
+    /// refused on macOS, the portal declined on Linux — and from the user's
+    /// side those are one event: they spoke, and nothing appeared where they
+    /// were typing. Whoever reports the outcome should report this.
+    pub fn pastes(&self) -> bool {
+        self.keyboard.is_some()
+    }
 }
 
 /// Whatever was on the clipboard before Kotha borrowed it to paste.

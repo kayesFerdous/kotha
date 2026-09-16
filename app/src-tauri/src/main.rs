@@ -1223,7 +1223,20 @@ fn dictate(
     app.state::<Session>()
         .listening
         .store(false, Ordering::SeqCst);
-    let _ = app.emit("kotha://state", if n > 0 { "done" } else { "idle" });
+    // `done` means the text is at the cursor — that is what the flat row of
+    // five bars was drawn to say. When the route stopped at the clipboard it
+    // has not happened, and saying `done` anyway is the pill telling the user
+    // their words went somewhere they did not. `copied` is the same finish,
+    // dimmed, and it covers both reasons the route can be clipboard-only: the
+    // user chose it, or the paste connection was refused.
+    let _ = app.emit(
+        "kotha://state",
+        match (n > 0, out.pastes()) {
+            (false, _) => "idle",
+            (true, true) => "done",
+            (true, false) => "copied",
+        },
+    );
     hide_soon(
         app,
         if n > 0 {

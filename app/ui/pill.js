@@ -8,7 +8,8 @@
    replaceable without touching a line of the app, and it is why mock.js can
    stand in for the entire backend in a browser tab.
 
-     emit("kotha://state", "idle" | "listening" | "thinking" | "done" | "error")
+     emit("kotha://state",
+          "idle" | "listening" | "thinking" | "done" | "copied" | "error")
      emit("kotha://level", <number 0..1>)          // 30 per second, always
      emit("kotha://theme", "system" | "dark" | "light")
 
@@ -45,12 +46,20 @@
    after either — see DWELL.
    ========================================================================== */
 
-const STATES = ["idle", "listening", "thinking", "done", "error"];
+/* `done` and `copied` are the same finish told apart by where the text went:
+   `done` is at the cursor, `copied` is on the clipboard and waiting to be
+   pasted. Rust decides between them from the route that actually opened, not
+   from the setting — see `Output::pastes`. */
+const STATES = ["idle", "listening", "thinking", "done", "copied", "error"];
 
 /** How long a terminal state lingers before the capsule collapses, in ms.
     `error` holds longer because a broken glyph is a thing to notice, and the
-    user may not have been looking at the pill when it broke. */
-const DWELL = { done: 900, error: 2200 };
+    user may not have been looking at the pill when it broke.
+
+    `copied` sits between the two: it is not a failure, but unlike `done` it
+    leaves the user something still to do — press paste — so it outstays the
+    glance that `done` only has to survive. */
+const DWELL = { done: 900, copied: 1600, error: 2200 };
 
 /* Level shaping. These numbers are the whole feel of the thing.
 
@@ -171,6 +180,7 @@ function setState(next) {
     listening: "Listening",
     thinking: "Transcribing",
     done: "Done",
+    copied: "Copied to the clipboard",
     error: "Dictation failed",
   }[next];
 

@@ -266,6 +266,7 @@ body {
 [data-state="listening"] .pill,
 [data-state="thinking"] .pill,
 [data-state="done"] .pill,
+[data-state="copied"] .pill,
 [data-state="error"] .pill {
   opacity: 1;
   transform: scaleY(1);
@@ -363,6 +364,33 @@ body {
   background: var(--line);
   opacity: 1;
   box-shadow: 0 0 var(--bloom) rgb(var(--glow-rgb) / calc(var(--glow-a) + 0.05));
+  transition: opacity 120ms ease, box-shadow 140ms ease;
+}
+
+/* --------------------------------------------------------------------------
+   copied — the text is on the clipboard, not at the cursor
+   --------------------------------------------------------------------------
+   `done` above is left exactly as it was: when the paste route is open, the
+   pill behaves the way it always has. This state exists only for the case
+   where it is not, and where `done`'s flat bright row would be claiming
+   something that did not happen.
+
+   The same evenly lit row, held back. Dimmed and with the bloom off, so it
+   reads as the same finish at lower confidence — which is precisely what it
+   is: the words are safe, they are just not where the user was typing. It
+   borrows nothing from `error`; there is no red and no gap, because nothing
+   broke and a user who chose the clipboard on purpose should not be shown an
+   alarm every time the app does what they asked.
+
+   The words are in `.sr` for anyone using a screen reader: "Copied to the
+   clipboard". No caption here, for the reason the error state gives — a line
+   of text in a 36px overlay, at the moment the user is looking at their own
+   document, is not read. */
+
+[data-state="copied"] .seg {
+  background: var(--line);
+  opacity: 0.42;
+  box-shadow: none;
   transition: opacity 120ms ease, box-shadow 140ms ease;
 }
 
