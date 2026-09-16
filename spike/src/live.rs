@@ -621,21 +621,24 @@ fn connect_keyboard(
 ///
 /// "The application does not have the permission to simulate input" is true and
 /// useless: it does not say which permission, where it lives, or what to do
-/// afterwards. On macOS all three have specific answers, and the third one is
-/// the trap — `Output::open` runs again only when the Text output setting
-/// *changes* (`main.rs`, the `chosen != mode` guard, checked at the top of a
-/// dictation), so granting Accessibility while Kotha is running changes nothing.
-/// Re-picking the same option in the settings window is a no-op, and switching
-/// away and back between dictations is too, so the only reliable instruction is
-/// a restart. A user who grants the permission, sees no difference, and
-/// concludes the app is broken is a user lost to a missing sentence.
+/// afterwards. On macOS all three have specific answers. A user who grants the
+/// permission, sees no difference, and concludes the app is broken is a user
+/// lost to a missing sentence.
+///
+/// The third answer used to be "restart it", and that was honest at the time:
+/// `Output::open` runs again only when the Text output setting *changes*
+/// (`main.rs`, the `chosen != mode` guard), so granting Accessibility to a
+/// running Kotha did nothing until it was quit and reopened. `retry_paste` is
+/// what removed that, and this sentence had to stop sending people to do it —
+/// an instruction that is no longer necessary reads as an app that does not
+/// know its own state.
 #[cfg(target_os = "macos")]
 fn permission_hint(e: &enigo::NewConError) -> Option<&'static str> {
     matches!(e, enigo::NewConError::NoPermission).then_some(
-        "        macOS calls it Accessibility. If the system did not just ask,          open
-        System Settings › Privacy & Security › Accessibility and          switch Kotha on.
-        Then quit Kotha from the tray and          open it again — it does not notice
-        the permission while it is running.",
+        "        macOS calls it Accessibility. If the system did not just ask, open\n        \
+         System Settings › Privacy & Security › Accessibility and switch Kotha on.\n        \
+         Then dictate again — Kotha checks before every dictation and starts\n        \
+         pasting as soon as the permission is there.",
     )
 }
 
