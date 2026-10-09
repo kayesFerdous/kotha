@@ -32,15 +32,21 @@
                 middle outward: a quiet room leaves five bars resting at
                 --rest, which is what "armed" looks like, and there is no
                 separate armed state to emit or maintain.
-     thinking   the model is decoding what was just said. The bars drop to the
-                dim ink and keep following the voice — the microphone does not
-                close while the model works — and a red chase runs across
-                them. In a quiet room the chase is all that moves.
-     done       text delivered. Every bar to full white at once, a beat, and
-                the capsule collapses into the line it grew from.
+     thinking   the user has stopped and the last of it is being decoded. The
+                voice no longer shows; the bars fill left to right at half
+                light, clear, and fill again — a progress bar made of the
+                glyph. Only ever after a stop: decodes that run while the user
+                is still talking are not shown at all.
+     done       text delivered. Every bar to full white at once, with bloom —
+                the fill the sweep kept reaching for, finally held — a beat,
+                and the capsule collapses into the line it grew from.
      error      the dictation failed. The row goes red and the middle bar goes
                 out, so the line is visibly broken, and the capsule is knocked
                 off level. No words: see the error block for why.
+
+   And one attribute that is not a state: `data-finish="confirm"` puts a ✕
+   and a ✓ either side of the glyph, for the finish where the user — not the
+   silence — decides a dictation is over. See the block of that name.
 
    Transitions between states are CSS, not JavaScript. pill.js only ever sets
    the attribute and writes one number per bar. So an agent can restyle every
@@ -64,7 +70,7 @@
    inversion: the pill floats over whatever the user is looking at, and a
    capsule that is lighter than the page behind it needs its marks to be the
    dark thing. Everything else — the taper, the fill from the middle out, the
-   chase, the flat row for `done`, the broken middle for `error` — is
+   sweep, the flat row for `done`, the broken middle for `error` — is
    identical, because all of it is written in terms of --line and --alert.
    ========================================================================== */
 
@@ -91,11 +97,16 @@
   --line: #f2f2f2;             /* the glyph, lit */
   --line-dim: rgba(242, 242, 242, 0.34);   /* the glyph while decoding */
   /* The only colour in the app, and the same one in both themes — it is the
-     red of the matra in the app's own icon. Kept as bare channels as well as
-     a colour, because the chase and the error glow need it at an alpha and
+     red of the matra in the app's own icon. It means failure in the pill and
+     nothing else. Kept as bare channels as well as a colour, because the
+     error glow needs it at an alpha and
      `rgb(var(--alert-rgb) / 0.55)` is the only way to get there from a token. */
   --alert-rgb: 230 25 25;
   --alert: rgb(var(--alert-rgb));
+  /* The same red, moved just far enough to be read as small text (≥4.5:1
+     on --surface). --alert itself is a mark colour and only reaches about
+     3.6:1 here. One per theme. */
+  --alert-text: #ff6259;
   /* What a bar sits at with no voice on it. Low enough that speech is
      obviously brighter, high enough that five dim bars still read as a mark
      somebody designed rather than as a pill that failed to draw. */
@@ -131,10 +142,10 @@
   /* Five bars, tapering out from the middle. The taper is the mark: five
      equal bars would be a meter, and a meter is what this replaced. */
   --seg-h: 4px;
-  --seg-gap: 6px;
-  --seg-1: 12px;               /* the outer pair */
-  --seg-2: 20px;               /* the inner pair */
-  --seg-3: 32px;               /* the middle, which is lit first and last */
+  --seg-gap: 5px;
+  --seg-1: 10px;               /* the outer pair */
+  --seg-2: 16px;               /* the inner pair */
+  --seg-3: 26px;               /* the middle, which is lit first and last */
 
   /* --- the capsule ------------------------------------------------------ */
   /* --pad-x is wider than it looks like it needs to be, and that is the
@@ -146,6 +157,11 @@
   /* A capsule. Anything less than half the height leaves a flat spot on the
      ends, and the flat spot is the thing that makes it read as a box. */
   --corner: 999px;
+  /* ✕ and ✓, in the `confirm` finish. The inset around them is derived, not
+     set: it is whatever keeps the capsule exactly as tall as the glyph-only
+     one, which also makes each button concentric with the capsule's end. */
+  --act: 24px;
+  --act-gap: 8px;
   /* Two shadows: a wide soft one to lift it off the desktop, a tight dark one
      to keep the edge crisp against a light background. Total spread stays
      well inside PILL_WINDOW in main.rs — a shadow clipped by the window edge
@@ -162,11 +178,18 @@
   --surface: rgba(255, 255, 255, 0.055);
   --surface-lit: rgba(255, 255, 255, 0.1);
   --hairline: rgba(255, 255, 255, 0.1);
+  /* The selected segment of a segmented control: a raised plate on the
+     track. Lighter than the track in dark mode; white and shadowed in light. */
+  --thumb: rgba(255, 255, 255, 0.13);
+  --thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  /* An open dropdown: solid, a step up from the page, so rows do not show
+     through it. */
+  --menu: #1c1c1e;
 
   /* --- motion ----------------------------------------------------------- */
   --in: 190ms cubic-bezier(0.2, 0.9, 0.2, 1);    /* fast, no overshoot */
   --out: 150ms cubic-bezier(0.5, 0, 0.9, 0.3);
-  --chase: 1000ms;             /* one pass of the decode chase */
+  --sweep: 1400ms;             /* one fill-and-clear of the decode sweep */
 }
 
 /* --------------------------------------------------------------------------
@@ -192,6 +215,7 @@
 
   --line: #18181b;
   --line-dim: rgba(24, 24, 27, 0.36);
+  --alert-text: #c01116;
 
   /* A dark bar at 0.16 on a light capsule is fainter to the eye than a light
      bar at 0.16 on a dark one — the same contrast ratio does not read the same
@@ -207,6 +231,9 @@
   --surface: rgba(24, 24, 27, 0.04);
   --surface-lit: rgba(24, 24, 27, 0.08);
   --hairline: rgba(24, 24, 27, 0.1);
+  --thumb: #ffffff;
+  --menu: #ffffff;
+  --thumb-shadow: 0 1px 2px rgba(24, 24, 27, 0.14), 0 0 0 0.5px rgba(24, 24, 27, 0.08);
 }
 
 /* Transparent all the way down: on Tauri the window itself is transparent, so
@@ -322,33 +349,42 @@ body {
 }
 
 /* --------------------------------------------------------------------------
-   thinking — the model is decoding
+   thinking — finishing up
    --------------------------------------------------------------------------
-   The bars drop to the dim ink but keep following the voice, because the
-   microphone does not close while the model decodes: Rust decodes after every
-   pause, so someone dictating continuously would otherwise spend the bulk of
-   their time looking at an animation that ignored them.
+   The voice stops showing, and the five bars fill one at a time, left to
+   right, then clear in the same order: a progress bar made of the glyph.
 
-   The chase runs left to right across the five bars, one pass a second. Five
-   bars at 200 ms apart is slow enough to read as a deliberate sweep rather
-   than a flicker — that pacing is doing as much work here as the colour. */
+   It used to be a thin red chase running over bars that were still following
+   the voice. Two signals at once, one of them in the colour that means
+   failure, and it read as neither. Now there is one thing on screen per
+   state, and the order tells the story by itself:
 
-[data-state="thinking"] .seg { background: var(--line-dim); }
+     listening   lit from the middle, by you          — it is hearing you
+     thinking    filling left to right, by itself     — it is working
+     done        all five, full, blooming             — it is finished
 
-[data-state="thinking"] .seg::after {
-  animation: chase var(--chase) linear infinite;
+   Left to right is what makes it read as progress rather than voice, which
+   always lights the middle first. Half light, no bloom, so that `done` — full
+   light with bloom — is unmistakably the brightest the pill ever gets: the
+   fill the sweep kept reaching for, finally held.
+
+   The animation owns `opacity` outright, which is what silences the voice:
+   an animated property beats the --b rule in `.seg`. `backwards` holds each
+   bar at its first frame through its delay, or the voice would show through
+   on the bars still waiting their turn. */
+
+[data-state="thinking"] .seg {
+  box-shadow: none;
+  animation: sweep var(--sweep) cubic-bezier(0.3, 0, 0.2, 1) infinite backwards;
 }
-[data-state="thinking"] .seg:nth-child(1)::after { animation-delay: 0ms; }
-[data-state="thinking"] .seg:nth-child(2)::after { animation-delay: 200ms; }
-[data-state="thinking"] .seg:nth-child(3)::after { animation-delay: 400ms; }
-[data-state="thinking"] .seg:nth-child(4)::after { animation-delay: 600ms; }
-[data-state="thinking"] .seg:nth-child(5)::after { animation-delay: 800ms; }
+[data-state="thinking"] .seg:nth-child(2) { animation-delay: 120ms; }
+[data-state="thinking"] .seg:nth-child(3) { animation-delay: 240ms; }
+[data-state="thinking"] .seg:nth-child(4) { animation-delay: 360ms; }
+[data-state="thinking"] .seg:nth-child(5) { animation-delay: 480ms; }
 
-@keyframes chase {
-  0%   { opacity: 0;   box-shadow: 0 0 0 rgb(var(--alert-rgb) / 0); }
-  10%  { opacity: 1;   box-shadow: 0 0 var(--bloom) rgb(var(--alert-rgb) / 0.55); }
-  34%  { opacity: 0;   box-shadow: 0 0 0 rgb(var(--alert-rgb) / 0); }
-  100% { opacity: 0;   box-shadow: 0 0 0 rgb(var(--alert-rgb) / 0); }
+@keyframes sweep {
+  0%, 55%, 100% { opacity: var(--rest); }
+  8%, 42%       { opacity: 0.66; }
 }
 
 /* --------------------------------------------------------------------------
@@ -377,9 +413,8 @@ body {
    The capsule itself does not move. It was tilted here for a while, to catch
    an eye that was not on it, and it was the only thing in the app that broke
    the horizontal — which is precisely why it drew attention, and also why it
-   looked like a bug. Red and a hole in the middle are enough; `thinking` is
-   the only other state with red in it and that one is dim, white-based and
-   moving, so the two cannot be confused.
+   looked like a bug. Red and a hole in the middle are enough: it is the only
+   state with any red in it at all.
 
    No caption, deliberately. A dictation failure has nothing useful to tell
    the user — they already know what to do, which is say it again — and a line
@@ -405,6 +440,89 @@ body {
 [data-state="error"] .seg:nth-child(3)::after { opacity: 0; box-shadow: none; }
 
 /* --------------------------------------------------------------------------
+   confirm — the user says when it is finished
+   --------------------------------------------------------------------------
+   A ✕ and a ✓ either side of the glyph. The glyph itself is untouched and
+   behaves exactly as in `listening` — the buttons are beside the light, not
+   part of it.
+
+   They are there from the first frame, never added on screen. Rust says which
+   finish this is before it says `listening`, so the capsule grows out of its
+   line already at this width and keeps it until it falls back into the line.
+   After ✓ the buttons fade but keep their room, so the glyph does not slide
+   along while it decodes: nothing in the pill moves sideways, ever.
+
+   The same height as the plain capsule, to the pixel — the inset is solved
+   from the glyph's own padding — and each button sits concentric with the
+   rounded end it is in. Equal margin all round a circle inside a semicircle
+   is what makes the pair read as part of the capsule rather than stuck on.
+
+   ✓ is the one solid thing in the pill: drawn in --line, the ink of a lit
+   bar, so it is the colour of "done" — and it blooms under the pointer the
+   way a bar blooms under the voice. ✕ is a hollow, quieter one. Red stays
+   reserved for the brand and for failure; neither button is a warning. */
+
+.act { display: none; }
+
+[data-finish="confirm"] .pill {
+  padding: calc((var(--pad-y) * 2 + var(--seg-h) - var(--act)) / 2);
+  gap: var(--act-gap);
+}
+
+[data-finish="confirm"] .act {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--act);
+  height: var(--act);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--line) 10%, transparent);
+  color: var(--line);
+  cursor: default;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--out), background-color 120ms ease, box-shadow 160ms ease;
+}
+
+[data-finish="confirm"][data-state="listening"] .act {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity var(--in), background-color 120ms ease, box-shadow 160ms ease;
+}
+
+.act svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ✕: present, not pressing. Its mark sits at the dim ink until it is
+   pointed at. */
+.act:not(.keep) svg { opacity: 0.62; transition: opacity 120ms ease; }
+.act:not(.keep):hover { background: color-mix(in srgb, var(--line) 18%, transparent); }
+.act:not(.keep):hover svg { opacity: 1; }
+
+.act.keep {
+  background: var(--line);
+  color: var(--ink-solid);
+}
+.act.keep svg { stroke-width: 2; }
+.act.keep:hover { box-shadow: 0 0 var(--bloom) rgb(var(--glow-rgb) / var(--glow-a)); }
+
+.act:active { opacity: 0.8 !important; }
+
+.act:focus-visible {
+  outline: 2px solid var(--alert);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
    Accessibility
    -------------------------------------------------------------------------- */
 
@@ -427,10 +545,11 @@ body {
      so `.seg` alone loses to `[data-state="done"] .seg` above and the
      brightness keeps sliding for exactly the people who asked it not to. */
   .seg, [data-state] .seg,
-  .seg::after, [data-state] .seg::after { transition: none; animation: none; }
-  /* No chase, so a steady dim red row stands in for it. It cannot be confused
-     with `error`, which is full red with the middle bar out. */
-  [data-state="thinking"] .seg::after { opacity: 0.4; }
+  .seg::after, [data-state] .seg::after,
+  [data-finish] .act, [data-finish] .act svg { transition: none; animation: none; }
+  /* No sweep, so a steady half-lit row stands in for it — between the
+     resting glyph and the full one, which is what it means. */
+  [data-state="thinking"] .seg { opacity: 0.5; }
 }
 
 /* ==========================================================================
@@ -518,7 +637,7 @@ body.setup .meter::after {
 }
 
 body.setup .note { font-size: 13px; color: var(--text-dim); }
-body.setup .note.bad { color: var(--alert); }
+body.setup .note.bad { color: var(--alert-text); }
 
 /* Three phases, one attribute on <body>, same idea as the pill's data-state:
    what is on screen is a CSS question, and setup.js only ever names the
@@ -531,31 +650,27 @@ body.setup[data-phase="ready"]       [data-phase="ready"] { display: block; }
 /* ==========================================================================
    THE SETTINGS WINDOW  (settings.html)
 
-   The third window, and the second ordinary one. Like `body.setup` above it
-   lives in this file rather than one of its own, so that the pill, the
-   first-run window and this cannot drift apart on colour — every rule below
-   reads the same :root tokens the glyph does, which is also the whole reason
-   the light theme reaches all three at once.
+   Four rows in two groups. Each row is a question on the left, one control on
+   the right, and one sentence underneath saying what the current answer does.
+   That sentence is the page's only explaining, and it is about one choice,
+   not all of them.
 
-   Scoped under `body.settings`, and it has to undo the transparent,
-   overflow-hidden body the pill needs, exactly as `body.setup` does.
+   It lives in this file so the pill, the first-run window and this cannot
+   drift apart on colour: everything below reads the same :root tokens, which
+   is the whole reason the light theme reaches all three at once.
 
    NOTHING HERE IS A CUSTOM CONTROL
    --------------------------------
-   Every choice on this page is a real `<input type="radio">` inside a real
-   `<label>`, styled with `accent-color`. Arrow keys move within a group, Tab
-   moves between groups, the labels are clickable because they are labels, and
-   a screen reader is handed a named radiogroup without being told anything.
-   A div with a click handler would have to be given all of that back by hand
-   and would still be worse.
+   The dropdowns are <select>s and the segmented switches are radio groups
+   with the circles hidden. Keyboard, focus and screen readers come for free;
+   the styling is only the surface.
 
-   The row tint for the selected option is `:has(:checked)`. If a web view is
-   ever too old for it the radio still fills, the row just stops tinting —
-   which is a cosmetic loss, not a broken setting.
+   The switch is `.switch`, never `.seg`: `.seg` is the pill's bar, and every
+   rule above that styles one would reach into this page too.
    ========================================================================== */
 
 body.settings {
-  --pad: 26px;
+  --pad: 20px;
   display: block;
   margin: 0;
   padding: 0;
@@ -563,160 +678,198 @@ body.settings {
   overflow: auto;
   background: var(--ink-solid);
   color: var(--text);
-  font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 400 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   cursor: default;
 }
 
-/* The header stays put while the settings scroll under it, because on a short
-   window the first group is already at the top and a title that scrolls away
-   takes the app's name with it. */
+body.settings ::selection { background: rgb(var(--alert-rgb) / 0.3); }
+
 body.settings header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 18px var(--pad);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--ink-solid);
+  gap: 10px;
+  padding: 22px var(--pad) 6px;
 }
 
-/* The app's own mark, inline so it inherits the theme: the k is currentColor
-   and the matra is --alert. A PNG here would need a second copy for light. */
-body.settings header .mark { width: 16px; height: 30px; flex: none; }
-/* The k is `fill="currentColor"` in the markup and inherits the text colour.
-   The matra cannot be: `var()` is CSS and is not read in an SVG presentation
-   attribute, so it is set here — which is where it belongs anyway. */
+/* The app's mark. The k is currentColor in the markup; the matra cannot be,
+   because var() is not read in an SVG presentation attribute. */
+body.settings header .mark { width: 11px; height: 21px; flex: none; }
 body.settings header .mark .bar { fill: var(--alert); }
 
-body.settings header h1 {
+body.settings h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
-body.settings main { padding: 4px var(--pad) var(--pad); }
+body.settings main { padding: 0 var(--pad); }
 
-body.settings section { margin-top: 26px; }
-
+/* Group titles: sentence case, quiet, close to the group they name and far
+   from the one above. */
 body.settings h2 {
-  margin: 0 0 2px;
-  font-size: 11px;
+  margin: 22px 0 7px 2px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
   color: var(--text-dim);
 }
 
-body.settings .hint {
-  margin: 0 0 11px;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-/* The group. One hairline-separated stack, so the options read as a set of
-   alternatives rather than as several unrelated switches. */
-body.settings .options {
-  border: 1px solid var(--hairline);
-  border-radius: 11px;
-  overflow: hidden;
+body.settings .group {
+  border-radius: 12px;
   background: var(--surface);
 }
 
-body.settings .opt {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  padding: 11px 13px;
-  cursor: pointer;
+body.settings .row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "label control" "says says";
+  align-items: center;
+  column-gap: 16px;
+  padding: 12px 14px;
 }
+body.settings .row + .row { border-top: 1px solid var(--hairline); }
 
-body.settings .opt + .opt { border-top: 1px solid var(--hairline); }
-body.settings .opt:hover { background: var(--surface-lit); }
-body.settings .options:has(:checked) .opt:has(:checked) { background: var(--surface-lit); }
+body.settings .label { grid-area: label; font-weight: 500; }
+body.settings .control { grid-area: control; }
 
-/* `accent-color` is the whole of the radio's styling. A hand-drawn one would
-   have to reimplement the focus ring, the checked state and the platform's
-   own idea of what a radio looks like. */
-body.settings .opt input {
-  margin: 2px 0 0;
-  accent-color: var(--alert);
-  flex: none;
-}
-
-body.settings .opt-name { display: block; }
-
-body.settings .opt-note {
-  display: block;
-  margin-top: 1px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--text-dim);
-}
-
-/* A `<kbd>` inside an option name, for the hotkey group. Shares the setup
-   window's look; the two windows show the same keys. */
-body.settings kbd {
-  padding: 1px 6px;
-  border: 1px solid var(--hairline);
-  border-radius: 4px;
-  background: var(--ink-solid);
-  font: inherit;
+body.settings .says {
+  grid-area: says;
+  margin: 5px 0 0;
   font-size: 12px;
+  color: var(--text-dim);
+  text-wrap: pretty;
+}
+body.settings .says:empty { display: none; }
+body.settings .says.bad { color: var(--alert-text); }
+
+/* --- dropdown ------------------------------------------------------------
+   A <details>: the summary is the button, the .list is the open menu. Not a
+   <select> — see the head of settings.html. */
+
+body.settings .menu { position: relative; }
+
+body.settings .menu summary {
+  position: relative;
+  display: block;
+  min-width: 112px;
+  padding: 5px 28px 5px 10px;
+  border-radius: 7px;
+  background: var(--surface-lit);
+  list-style: none;
   white-space: nowrap;
 }
+body.settings .menu summary::-webkit-details-marker { display: none; }
+body.settings .menu:not(.disabled) summary:hover,
+body.settings .menu[open] summary { background: var(--thumb); }
+body.settings .menu.disabled summary { opacity: 0.5; }
 
-/* A group the app is not actually obeying — an environment variable has taken
-   it over, or the hotkey failed to bind. Disabled and captioned, because
-   showing a choice that would not take effect is worse than showing none. */
-body.settings .opt input:disabled { cursor: default; }
-body.settings .options:has(input:disabled) { opacity: 0.55; }
-body.settings .options:has(input:disabled) .opt { cursor: default; }
-body.settings .options:has(input:disabled) .opt:hover { background: none; }
-
-body.settings .warn {
-  display: flex;
-  gap: 7px;
-  margin: 9px 0 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--text-dim);
-}
-
-/* The one red mark on the page, and it is a rule rather than an icon: the app
-   has one colour and this is it. */
-body.settings .warn::before {
+/* The chevron. Drawn, not a glyph: two borders of a small square, turned. */
+body.settings .menu summary::after {
   content: "";
-  flex: none;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--alert);
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -4px;
+  border: solid var(--text-dim);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
 }
 
-body.settings [hidden] { display: none !important; }
+body.settings .menu .list {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 100%;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--menu);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.12);
+}
 
-/* What just happened, bottom of the window. It says nothing at rest — a
-   settings page that permanently reads "Saved" is a page that has stopped
-   meaning it. */
-body.settings footer {
-  position: sticky;
-  bottom: 0;
-  min-height: 20px;
-  padding: 10px var(--pad) 14px;
-  border-top: 1px solid var(--hairline);
-  background: var(--ink-solid);
-  font-size: 12.5px;
+body.settings .menu .list label {
+  position: relative;
+  display: block;
+  padding: 5px 12px 5px 28px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+body.settings .menu .list label:hover { background: var(--surface-lit); }
+
+body.settings .menu .list input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+}
+
+/* The tick beside the current choice. */
+body.settings .menu .list label:has(:checked)::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  margin-top: -6px;
+  border: solid var(--text);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+/* --- segmented ----------------------------------------------------------- */
+
+body.settings .switch {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--surface-lit);
+}
+
+body.settings .switch label {
+  position: relative;
+  padding: 4px 11px;
+  border-radius: 6px;
   color: var(--text-dim);
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+body.settings .switch label:hover { color: var(--text); }
+
+body.settings .switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
 }
 
-body.settings footer.bad { color: var(--alert); }
+body.settings .switch label:has(:checked) {
+  background: var(--thumb);
+  box-shadow: var(--thumb-shadow);
+  color: var(--text);
+  font-weight: 500;
+}
 
-/* Keyboard focus is never removed, only redrawn. `:focus-visible` so a mouse
-   click does not leave a ring behind it. */
-body.settings :focus-visible {
+/* --- keyboard focus ------------------------------------------------------ */
+
+body.settings .menu summary:focus-visible,
+body.settings .menu .list label:has(:focus-visible),
+body.settings .switch label:has(:focus-visible) {
   outline: 2px solid var(--alert);
-  outline-offset: 2px;
-  border-radius: 3px;
+  outline-offset: 1px;
+}
+
+body.settings footer {
+  padding: 18px var(--pad) 22px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.settings .switch label { transition: none; }
 }

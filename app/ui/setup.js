@@ -1,7 +1,7 @@
 /* ==========================================================================
    Kotha — the first-run window's behaviour.
 
-   THE CONTRACT, WHICH IS ONE EVENT AND TWO CALLS
+   THE CONTRACT, WHICH IS TWO EVENTS AND THREE CALLS
    ----------------------------------------------
    The pill's contract is one-way: Rust emits, the UI listens, and the UI never
    calls into Rust (see the header of pill.js — that stays true). This window is
@@ -10,12 +10,16 @@
 
      invoke("start_download")                       // the button, and only it
      invoke("hotkey_label") -> "F9"                  // or null if nothing bound
+     invoke("model_present") -> true                 // already downloaded
+     listen("kotha://hotkey", "F9" | null)           // Settings changed it
      listen("kotha://download", { done, total })    // progress, ~1 per MB
      listen("kotha://download", { error })          // it went wrong, in words
 
-   The second call is asked, not pushed, because the answer is only wanted once
-   and asking has no race — an event emitted while this file was still parsing
-   would simply be missed.
+   The label is asked on load, because asking has no race — an event emitted
+   while this file was still parsing would simply be missed — and then pushed
+   again whenever the settings window rebinds, because this window can be open
+   beside it. `model_present` is asked because a page load is not only the
+   first one: a reload must not put a finished download back on the offer.
 
    One event with two shapes rather than two events, because the window only
    ever asks one question of it: is this still going?
@@ -68,7 +72,7 @@ function ready(key) {
     ? `Press ${key.split("+").map(kbd).join(" + ")} anywhere, say something, and
        press it again. The text lands where your cursor is.`
     : `Another application already has Kotha's hotkey, so there is nothing to
-       press yet — pick a different one under <b>Hotkey</b> in the tray menu.
+       press yet — pick a different one in <b>Settings…</b> in the tray menu.
        Until then, the tray icon's <b>Dictate</b> starts one.`;
 }
 
@@ -105,7 +109,9 @@ if (window.__TAURI__) {
   const { listen } = window.__TAURI__.event;
 
   listen("kotha://download", (e) => onProgress(e.payload));
+  listen("kotha://hotkey", (e) => ready(e.payload));
   invoke("hotkey_label").then(ready);
+  invoke("model_present").then((yes) => yes && phase("ready"));
   start = () => invoke("start_download", { why: window.__DIAG });
 } else {
   /* ----------------------------------------------------------------- mock */

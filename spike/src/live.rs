@@ -88,6 +88,17 @@ const PASTE_MODIFIER: Key = Key::Meta; // ⌘V
 #[cfg(not(target_os = "macos"))]
 const PASTE_MODIFIER: Key = Key::Control; // Ctrl+V
 
+/// The V of that chord. On Windows it has to be the virtual key, not the
+/// letter: enigo turns `Unicode('v')` into a key through the *foreground
+/// window's* keyboard layout (`VkKeyScanExW`), and a Bangla layout has no key
+/// that types a Latin v. enigo then falls back to sending the letter as text,
+/// and Ctrl plus a text packet is not a paste to any application — so nothing
+/// lands, and nothing says why. VK_V is Ctrl+V under every layout.
+#[cfg(target_os = "windows")]
+const PASTE_KEY: Key = Key::V;
+#[cfg(not(target_os = "windows"))]
+const PASTE_KEY: Key = Key::Unicode('v');
+
 /// How long the target application gets to read the clipboard before the
 /// previous contents go back.
 ///
@@ -562,7 +573,7 @@ fn permission_hint(_: &enigo::NewConError) -> Option<&'static str> {
 
 fn paste_chord(kb: &mut Enigo) -> Result<(), enigo::InputError> {
     kb.key(PASTE_MODIFIER, Direction::Press)?;
-    let pressed = kb.key(Key::Unicode('v'), Direction::Click);
+    let pressed = kb.key(PASTE_KEY, Direction::Click);
     // Release the modifier even if the keystroke failed. A stuck Ctrl would
     // break the user's keyboard until they pressed and released it themselves.
     kb.key(PASTE_MODIFIER, Direction::Release)?;

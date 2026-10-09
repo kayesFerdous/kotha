@@ -1808,11 +1808,99 @@ dictation app are on a laptop with no such card.
       entry stays struck rather than deleted so it is not proposed a third time
 - [x] Dark and light themes, across all three windows
 - [ ] Choose a different Whisper model
+- [x] **The user decides when it is finished** — the `confirm` finish, see
+      below. Built 2026-10-09; **still to watch on the real desktop**
 - [ ] Push-to-talk as an alternative to toggle
 - [ ] History window
 - [ ] Start/stop sounds
 - [ ] Bigram context for the corrector (SymSpell supports it; still sub-ms)
 - [ ] Per-app "never dictate here" list
+
+#### Ending a dictation: when it goes quiet, or when I say so — 2026-10-09
+
+A setting, `finish`: **`pause`** (the original — text lands at every pause,
+three seconds of quiet ends it) or **`confirm`** (talk as long as you like;
+nothing is typed until ✓ or the hotkey, and ✕ or Esc throws it all away).
+Same pattern as ChatGPT's dictation (✕ / ✓ around a waveform) and Wispr
+Flow's hands-free bar (Cancel / Stop, Esc to cancel — a keyboard cancel was
+a feature request there).
+
+**Why it is fast.** The obvious build records everything and decodes on ✓ —
+which at 1.5x real time is seconds of dead air per sentence spoken, and is the
+one thing people complain about in ChatGPT's version. Instead every utterance
+is still decoded the moment the VAD closes it, while the user keeps talking,
+and *held* rather than pasted. ✓ waits only on the last sentence. The pill
+stays on `listening` through those hidden decodes; `thinking` means "after ✓".
+The whole dictation lands as one paste, so one undo takes it back.
+
+**The pill.** `✕ ▬▬▬▬▬ ✓`, 196x36 — the same height as the plain capsule to
+the pixel, each button concentric with the rounded end it sits in. ✓ is solid
+`--line` and blooms on hover like a lit bar; ✕ is a hollow ghost. Rust sends
+`kotha://finish` before `listening`, so the capsule grows out of its line
+already at that width and never resizes on screen; after ✓ the buttons fade
+but keep their room, so the glyph does not slide. `pause` is pixel-identical
+to before.
+
+**The pill now calls into Rust**, once: `invoke("finish", { keep })`. A button
+has to. `stop()` emits the new state from the calling thread immediately,
+because the worker may be several seconds into a decode and a button that does
+nothing for that long looks broken.
+
+**Esc is grabbed only while a `confirm` dictation runs**, and given back at the
+end of it, error or not. **The pill window takes clicks while a `confirm`
+dictation is up** — including the transparent margin around the capsule
+(`PILL_WINDOW`, 320x120), which blocks whatever is behind it for that long.
+
+**A bug fixed on the way, in both finishes.** The loop only reads the
+microphone between decodes, so anything said during the last decode was still
+queued when the stop arrived — and breaking out of the loop threw it away.
+Finish a sentence while the previous one decodes, press the hotkey, lose the
+sentence. The stop path now drains the queue (dropping the stream closes it)
+before flushing the segmenter.
+
+**It did not hold, first time.** Kayes clicked ✓ and KWin activated the pill:
+the editor dimmed, lost its caret, and the paste went nowhere.
+`set_focusable(false)` and the `Notification` hint stop a window *appearing*
+active; they do not stop a click activating it. The pill is now
+**override-redirect** on Linux (set from GTK's realise signal, in
+`no_activate`) — unmanaged, like a tooltip, so there is no window manager in
+the path to activate it. **Still to confirm on screen.**
+
+Two smaller things from the same try: the capsule came down from 214 to 196 px
+(buttons 24 px, 8 px from the glyph), and closing Settings destroyed the
+window, so Settings… never opened again until a restart. The first-run and
+settings windows now hide on close.
+
+#### The glyph's decode sweep, and a settings window rewritten — 2026-10-09
+
+**Kayes could not read `thinking`.** It was a thin red chase over bars that
+were still following the voice — two signals at once, one in the colour that
+means failure — and in `pause` it flashed on after every pause while he was
+still talking. Now the cycle is three looks, one per state, and the order
+tells the story: voice lights the middle (`listening`) → the bars fill left
+to right at half light and clear, a progress bar made of the glyph
+(`thinking`) → all five full with bloom, the brightest the pill ever gets
+(`done`). The voice is silenced in `thinking` by letting the animation own
+`opacity`. `thinking` is now shown **only after a stop**: mid-dictation
+decodes are invisible, in both finishes — in `pause` the text appearing at
+the cursor already says they happened. Red now appears in the pill only for
+`error`.
+
+The glyph was scaled down ~15% (bars 10/16/26, gap 5) — the capsule is 148 px
+plain, 174 px with ✓ and ✕.
+
+**Settings was rewritten from scratch.** Four rows in two groups — Shortcut,
+Stop dictating, Put text, Theme — each a question, one control (a `<select>`
+or a segmented switch built from radios), and one sentence underneath about
+what the *current* choice does, rewritten when it changes. Nothing says
+"Saved"; a refusal reverts the control and says why in red under the row.
+The window is 460x510 and does not scroll. The option labels moved into the
+Rust constants in plain words ("Type at cursor", "When I go quiet"), and
+`settings_get` sends the app version for the footer.
+
+One trap worth keeping: the switch was first written as `.seg`, which is the
+pill's bar class, and every glyph rule reached into the settings page. It is
+`.switch`. The old stylesheet had a comment warning about exactly this.
 
 #### The settings window, two languages and a light theme — 2026-09-14
 

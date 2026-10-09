@@ -72,8 +72,7 @@ palettes and not three, and no stylesheet rule ever asks what the desktop is
 doing. In light mode the glyph *darkens* with the voice and the bloom becomes
 a soft shadow; every other rule is identical, because all of them are written
 in terms of `--line` and `--alert`. Rust tells the pill via a third event,
-`kotha://theme`, emitted on change and again inside `show()` — the pill's
-contract stays one-way and it still never calls into Rust.
+`kotha://theme`, emitted on change and again inside `show()`.
 
 **The mark is a Latin `k` wearing a Bengali matra**, in `--alert` red. The
 matra is the headline stroke that joins the letters of a Bengali word into one
@@ -84,9 +83,11 @@ with the plate gone and the red flattened to black, because a template image
 keeps only alpha.
 
 **The frontend is `app/ui/`, and it is meant to be edited on its own.** No
-build step. The pill's contract with Rust is three events, one way —
-`kotha://state`, `kotha://level`, `kotha://theme` — documented at the top of
-`pill.js`, and the pill still never calls into Rust. Every colour and dimension
+build step. The pill's contract with Rust is four events in —
+`kotha://state`, `kotha://level`, `kotha://theme`, `kotha://finish` — and
+one call out, `finish(keep)`, made only by the ✓ and ✕ buttons the `confirm`
+finish puts on the pill. Documented at the top of `pill.js`. The pill never
+decides a dictation is over; it asks, and Rust answers with a state. Every colour and dimension
 is a token at the top of `pill.css`; every transition is CSS, keyed off a
 `data-state` attribute. **Change the look there, not in the app** — a CSS
 reload beats a ten-minute CTranslate2 compile, and nothing in the pill needs
