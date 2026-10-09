@@ -1996,11 +1996,12 @@ fn autostart_on(app: &AppHandle) -> bool {
 const FINISHES: [(&str, &str); 2] =
     [("pause", "When I go quiet"), ("confirm", "When I press \u{2713}")];
 
-/// The chosen finish, or `pause`.
+/// The chosen finish, or `confirm` — the default, so nothing is typed until
+/// the user says so.
 fn finish_choice(path: &Path) -> String {
     setting(path, "finish")
         .filter(|f| FINISHES.iter().any(|(id, _)| id == f))
-        .unwrap_or_else(|| FINISHES[0].0.to_string())
+        .unwrap_or_else(|| "confirm".to_string())
 }
 
 /// One file, one JSON object. The hotkey and the microphone add keys here.
@@ -2385,13 +2386,12 @@ mod tests {
             "theme.js defaults to system; so must Rust"
         );
 
-        // An unknown finish must not strand a user in `confirm` with no idea
-        // why the pill grew buttons.
-        assert_eq!(finish_choice(&path), "pause");
-        save_setting(&path, "finish", "confirm");
+        // `confirm` is the default, and junk falls back to it.
         assert_eq!(finish_choice(&path), "confirm");
-        save_setting(&path, "finish", "eventually");
+        save_setting(&path, "finish", "pause");
         assert_eq!(finish_choice(&path), "pause");
+        save_setting(&path, "finish", "eventually");
+        assert_eq!(finish_choice(&path), "confirm");
 
         std::fs::remove_file(&path).ok();
     }

@@ -160,7 +160,7 @@ if (window.__TAURI__) {
     hotkey: "F9",
     hotkeys: ["F9", "Ctrl+Shift+Space", "Alt+Shift+D", "Ctrl+Alt+Space"],
     hotkeyBound: true,
-    finish: "pause",
+    finish: "confirm",
     finishes: [["pause", "When I go quiet"], ["confirm", "When I press ✓"]],
     paste: "paste",
     pasteModes: [
