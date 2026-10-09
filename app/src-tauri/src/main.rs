@@ -71,7 +71,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Where the model lives.
 ///
@@ -343,7 +343,7 @@ fn start_download(app: AppHandle) {
 /// Which key the "Ready" panel should tell the user to press, or `None` if
 /// nothing is bound.
 ///
-/// Computed rather than stored: the hotkey can be changed from the tray after
+/// Computed rather than stored: the hotkey can be changed in Settings after
 /// this window is already open, and registration can fail — in which case the
 /// panel must not name a key that does nothing. That is the whole reason this
 /// is not a string in the HTML any more.
@@ -351,6 +351,16 @@ fn start_download(app: AppHandle) {
 fn hotkey_label(app: AppHandle) -> Option<String> {
     let k = hotkey(&app);
     app.global_shortcut().is_registered(k.as_str()).then_some(k)
+}
+
+/// Whether the first-run window should open on "Ready" rather than the offer.
+///
+/// Asked on every page load, because a page load is not only the first one: a
+/// reload (F5, or Refresh on WebView2's context menu) used to put a user with
+/// the model already on disk back in front of "Download the model".
+#[tauri::command]
+fn model_present(app: AppHandle) -> bool {
+    model_ready(&model_dir(&app))
 }
 
 /// Bring up the settings window, focused.
@@ -418,6 +428,11 @@ fn settings_get(app: AppHandle) -> serde_json::Value {
         // the login item themselves, and the window must show what is true.
         "autostart": if autostart_on(&app) { "on" } else { "off" },
         "autostarts": AUTOSTART,
+
+        "finish": finish_choice(&path),
+        "finishes": FINISHES,
+
+        "version": app.package_info().version.to_string(),
     })
 }
 
@@ -459,6 +474,7 @@ fn settings_set(app: AppHandle, key: String, value: String) -> Result<(), String
                 eprintln!("hotkey  {value} refused ({e}) — keeping {previous}");
                 if let Err(e) = gs.register(previous.as_str()) {
                     eprintln!("hotkey  {previous} could not be taken back either ({e})");
+                    let _ = app.emit("kotha://hotkey", hotkey_label(app.clone()));
                     return Err(format!(
                         "{value} is already taken by another application, and {previous} \
                          could not be taken back. Pick a different one."
@@ -500,12 +516,22 @@ fn settings_set(app: AppHandle, key: String, value: String) -> Result<(), String
             // so the two can never disagree.
             return Ok(());
         }
+        "finish" => {
+            if !FINISHES.iter().any(|(id, _)| *id == value) {
+                return Err(format!("{value} is not a way to finish"));
+            }
+            println!("finish  {value} — from the next dictation");
+        }
         other => return Err(format!("{other} is not a setting")),
     }
 
     save_setting(&path, &key, &value);
     if key == "theme" {
         let _ = app.emit("kotha://theme", &value);
+    }
+    // The first-run window names the key, and may be open beside this one.
+    if key == "hotkey" {
+        let _ = app.emit("kotha://hotkey", hotkey_label(app.clone()));
     }
     Ok(())
 }
@@ -582,7 +608,7 @@ fn sha256(path: &Path) -> anyhow::Result<String> {
 /// which time the pill has already appeared in the wrong place.
 ///
 /// It has to stay comfortably larger than the capsule in pill.css: the pill is
-/// about 170×36 today, and its shadow spreads 32 px. Bigger than that is only
+/// about 170×36 today — 196×36 with ✓ and ✕ — and its shadow spreads 32 px. Bigger than that is only
 /// more transparent surface for the compositor to blend every frame.
 const PILL_WINDOW: (f64, f64) = (320.0, 120.0);
 
@@ -647,6 +673,10 @@ enum Cmd {
     /// Download the model. Sent by the first-run window's button, and by
     /// nothing else — the 778 MB is never spent without being asked for.
     Fetch,
+    /// End a dictation and throw away everything it heard. Only reachable in
+    /// the `confirm` finish — ✕ on the pill, or Esc — because in `pause` the
+    /// text has already been typed by the time anyone could ask.
+    Cancel,
 }
 
 /// The app's state: whether a dictation is running, and how to reach the
@@ -700,18 +730,21 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_download,
             hotkey_label,
+            model_present,
+            finish,
             settings_get,
             settings_set
         ])
-        // Closing the settings window hides it instead. A closed Tauri window
-        // is destroyed, and `show_settings` only ever shows the one declared in
-        // tauri.conf.json — so after the first close, "Settings…" found no
-        // window and did nothing until the app was restarted.
-        .on_window_event(|window, event| {
+        // The ✕ on the first-run and settings windows hides them rather than
+        // destroying them. They are declared in tauri.conf.json, created once
+        // at startup, and only ever *shown* after that — so a closed window was
+        // a window gone for the life of the process, and Settings… in the tray
+        // printed "no window labelled `settings`" and did nothing.
+        .on_window_event(|w, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "settings" {
+                if w.label() != "pill" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = w.hide();
                 }
             }
         })
@@ -776,11 +809,14 @@ fn main() {
 
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(|app, _, event| {
-                        // Exactly one shortcut is ever registered — the tray
-                        // unregisters before it binds another — so whatever
-                        // arrives here is it.
-                        if event.state() == ShortcutState::Pressed {
+                    .with_handler(|app, shortcut, event| {
+                        // The hotkey, and — only while a `confirm` dictation
+                        // is running — a bare Esc, which throws it away. None
+                        // of `HOTKEYS` is Esc, so the key alone says which.
+                        if event.state() != ShortcutState::Pressed {
+                        } else if shortcut.key == Code::Escape {
+                            stop(app, false);
+                        } else {
                             toggle(app);
                         }
                     })
@@ -1012,20 +1048,45 @@ fn give_back_foreground(w: &WebviewWindow, before: usize) {
 /// and a frozen pill is worse than no pill.
 fn toggle(app: &AppHandle) {
     let session = app.state::<Session>();
-    let was_listening = session.listening.swap(true, Ordering::SeqCst);
-    if was_listening {
-        session.listening.store(false, Ordering::SeqCst);
+    if session.listening.swap(true, Ordering::SeqCst) {
+        // Pressing it again means "done" — in `confirm`, the same as ✓.
+        stop(app, true);
+        return;
     }
-    let cmd = if was_listening { Cmd::Stop } else { Cmd::Start };
-    println!("toggle  {}", if was_listening { "stop" } else { "start" });
-    let sent = session
-        .tx
-        .lock()
-        .map(|tx| tx.send(cmd).is_ok())
-        .unwrap_or(false);
+    println!("toggle  start");
+    send(app, Cmd::Start);
+}
+
+/// End the running dictation: `keep` types what it heard, `!keep` discards it.
+/// The hotkey, the tray, ✓, ✕ and Esc all end up here.
+///
+/// The pill is told at once, from this thread, rather than when the worker
+/// gets round to it — the worker may be in the middle of a decode for several
+/// seconds, and a key or a button that does nothing for that long looks
+/// broken.
+fn stop(app: &AppHandle, keep: bool) {
+    let session = app.state::<Session>();
+    if !session.listening.swap(false, Ordering::SeqCst) {
+        return; // Already over — it ended on its own, or a second click.
+    }
+    println!("toggle  {}", if keep { "stop" } else { "cancel" });
+    let _ = app.emit("kotha://state", if keep { "thinking" } else { "idle" });
+    send(app, if keep { Cmd::Stop } else { Cmd::Cancel });
+}
+
+fn send(app: &AppHandle, cmd: Cmd) {
+    let sent = app.state::<Session>().tx.lock().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false);
     if !sent {
         eprintln!("worker is gone — dictation is not available");
     }
+}
+
+/// ✓ and ✕ on the pill. The pill's only call into Rust — see the head of
+/// pill.js for why it has one at all.
+#[tauri::command]
+fn finish(app: AppHandle, keep: bool) {
+    println!("pill    {}", if keep { "✓" } else { "✕" });
+    stop(&app, keep);
 }
 
 /// The worker thread: one engine, loaded once, for the life of the process.
@@ -1049,7 +1110,7 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
         // already ended on its own. Ignore it rather than treating it as an
         // error.
         match cmd {
-            Cmd::Stop => continue,
+            Cmd::Stop | Cmd::Cancel => continue,
             Cmd::Fetch => {
                 download(&app);
                 continue;
@@ -1090,7 +1151,28 @@ fn worker(app: AppHandle, rx: mpsc::Receiver<Cmd>) {
             out.retry_paste();
         }
 
-        if let Err(e) = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads) {
+        // Read once per dictation, like the paste route.
+        let confirm = finish_choice(&settings_path(&app)) == "confirm";
+
+        // Esc is grabbed for exactly as long as a `confirm` dictation runs,
+        // and given straight back: holding it any longer would take Esc away
+        // from every other application on the desktop.
+        let gs = app.global_shortcut();
+        let esc = confirm && match gs.register("Escape") {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("hotkey  Esc unavailable ({e}) — ✕ on the pill still cancels");
+                false
+            }
+        };
+        let result = dictate(&app, &rx, &mut engine, &corrector, &mut out, threads, confirm);
+        if esc {
+            if let Err(e) = gs.unregister("Escape") {
+                eprintln!("hotkey  could not give Esc back ({e})");
+            }
+        }
+
+        if let Err(e) = result {
             // Never leave the pill up on a failure: the user pressed a key and
             // deserves to be told, not to be left looking at a frozen pill.
             // Telling them is the `error` state — going straight to `idle`
@@ -1118,6 +1200,7 @@ fn dictate(
     corrector: &Corrector,
     out: &mut Output,
     threads: usize,
+    confirm: bool,
 ) -> anyhow::Result<()> {
     // The microphone first: a missing one should cost a millisecond, not four
     // seconds and 1.4 GB. `Microphone` is not Send under ALSA, which is the
@@ -1129,7 +1212,7 @@ fn dictate(
         level_chunk,
     } = live::open_microphone()?;
     let blocks = meter(app, blocks, level_chunk);
-    show(app);
+    show(app, confirm);
     let _ = app.emit("kotha://state", "listening");
 
     // Loaded on first use rather than at startup: a tray app that has not
@@ -1158,11 +1241,20 @@ fn dictate(
     let mut last_voice = std::time::Instant::now();
     let mut logged_block = false;
     let mut worst_lag = Duration::ZERO;
-    let idle = idle_stop();
+    // `confirm` waits for the user however long they are quiet — that is the
+    // whole of what it is for. The pill's ✓ and ✕ are always on screen, so it
+    // cannot get stuck the way a missed hotkey once stuck `pause`.
+    let idle = if confirm { None } else { idle_stop() };
+    // In `confirm`, every utterance is still decoded the moment the segmenter
+    // closes it, while the user carries on talking — but held here instead of
+    // typed. So ✓ waits on the last sentence only, not on the whole
+    // recording, which at 1.5x real time would be seconds per sentence said.
+    let mut held: Vec<String> = Vec::new();
 
     let stopped_by = loop {
         match rx.try_recv() {
             Ok(Cmd::Stop) => break "hotkey",
+            Ok(Cmd::Cancel) => break "cancel",
             Err(mpsc::TryRecvError::Disconnected) => break "shutdown",
             // A Fetch arriving mid-dictation means the model is already
             // there and somebody pressed the button anyway. Ignoring it beats
@@ -1208,11 +1300,10 @@ fn dictate(
             // the pill alive forever: the VAD opens on a breath, the engine
             // throws the decode away, and the timer restarts anyway — so the
             // dictation could never end on its own once it had started.
-            if deliver(app, engine, corrector, out, n + 1, &utterance)? {
+            if deliver(engine, corrector, out, n + 1, &utterance, confirm.then_some(&mut held))? {
                 n += 1;
                 last_voice = std::time::Instant::now();
             }
-            let _ = app.emit("kotha://state", "listening");
         }
 
         if segmenter.is_speaking() {
@@ -1222,13 +1313,47 @@ fn dictate(
         }
     };
 
-    // Stopping mid-sentence is an ordinary thing to do. Whatever is buffered
-    // gets transcribed rather than thrown away.
     drop(stream);
+    if stopped_by == "cancel" {
+        app.state::<Session>().listening.store(false, Ordering::SeqCst);
+        let _ = app.emit("kotha://state", "idle");
+        hide_soon(app, Duration::from_millis(400));
+        println!("cancelled after {n} utterance(s); {} thrown away\n", held.len());
+        return Ok(());
+    }
+
+    // Stopping mid-sentence is an ordinary thing to do. Whatever is buffered
+    // gets transcribed rather than thrown away — and that includes audio still
+    // queued behind a decode. The loop only reads the microphone between
+    // decodes, so anything said while the last one ran is sitting in `blocks`
+    // when the stop arrives. Breaking out used to drop it on the floor:
+    // finish a sentence during a decode, press the hotkey, lose the sentence.
+    // Dropping the stream closes the queue, so this drains and ends.
+    //
+    // This is the only `thinking` the pill ever shows: the decodes that run
+    // while the user is still talking are not shown at all. In `pause` their
+    // text appearing at the cursor already says they happened, and flipping
+    // the glyph to a progress sweep after every pause made it impossible to
+    // tell "still listening" from "finishing up". So the glyph tells one
+    // story — voice, then the sweep, then the full row — and the sweep means
+    // exactly one thing: you have stopped, and the last of it is on its way.
+    // (`stop` usually said this already; a silence stop has not.)
+    let _ = app.emit("kotha://state", "thinking");
+    for (_, block) in blocks.iter() {
+        for utterance in intake.feed(&block, &mut segmenter)? {
+            if deliver(engine, corrector, out, n + 1, &utterance, confirm.then_some(&mut held))? {
+                n += 1;
+            }
+        }
+    }
     if let Some(tail) = segmenter.flush() {
-        if deliver(app, engine, corrector, out, n + 1, &tail)? {
+        if deliver(engine, corrector, out, n + 1, &tail, confirm.then_some(&mut held))? {
             n += 1;
         }
+    }
+    // One paste for the whole dictation, so a single undo takes it all back.
+    if !held.is_empty() {
+        out.deliver(&held.join(" "));
     }
 
     app.state::<Session>()
@@ -1353,15 +1478,14 @@ fn meter(
 /// caller must treat that as silence — not as a reason to keep listening. See
 /// the loop in `dictate`.
 fn deliver(
-    app: &AppHandle,
     engine: &Engine,
     corrector: &Corrector,
     out: &mut Output,
     n: usize,
     utterance: &[f32],
+    held: Option<&mut Vec<String>>,
 ) -> anyhow::Result<bool> {
     let secs = utterance.len() as f64 / kotha_spike::SAMPLE_RATE as f64;
-    let _ = app.emit("kotha://state", "thinking");
 
     let t = std::time::Instant::now();
     let text = engine.transcribe(utterance)?;
@@ -1385,7 +1509,10 @@ fn deliver(
     if fixed != text {
         println!("  → {fixed}");
     }
-    out.deliver(&fixed);
+    match held {
+        Some(held) => held.push(fixed),
+        None => out.deliver(&fixed),
+    }
     println!();
     Ok(true)
 }
@@ -1412,15 +1539,41 @@ fn deliver(
 ///
 /// Not fatal if it fails. Without it the pill still works; it just steals the
 /// active-window title on the way past.
+///
+/// **And then the pill got buttons, and the hint stopped being enough.** In the
+/// `confirm` finish the pill takes clicks, and KWin activates whatever is
+/// clicked, hint or no hint: click ✓, the editor behind dims, its caret goes,
+/// and the paste lands nowhere. Seen 2026-10-09.
+///
+/// So the pill is also **override-redirect** — the window manager is told to
+/// leave it alone entirely, which is what tooltips and on-screen displays are.
+/// An unmanaged window cannot be activated, because activating is a thing a
+/// window manager does and this one has none. Clicks still arrive: they go
+/// from the X server to the window, not through the WM. The flag is read when
+/// the window is mapped, and the GDK window does not exist until GTK realises
+/// it (see the click-through note in `show`), so it is set from the realise
+/// signal rather than here.
+///
+/// Side effects, all harmless here: the WM no longer places the window — `place`
+/// does that already — nor keeps it on top; an unmanaged window sits above
+/// every managed one anyway.
 #[cfg(target_os = "linux")]
 fn no_activate(w: &WebviewWindow) {
-    use gtk::prelude::GtkWindowExt;
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
     match w.gtk_window() {
-        Ok(g) => g.set_type_hint(gtk::gdk::WindowTypeHint::Notification),
-        Err(e) => eprintln!(
-            "window  could not set the type hint ({e}); \
-                             the pill may dim the window behind it"
-        ),
+        Ok(g) => {
+            g.set_type_hint(gtk::gdk::WindowTypeHint::Notification);
+            g.connect_realize(|g| match g.window() {
+                Some(gdk) => {
+                    gdk.set_override_redirect(true);
+                    println!("window  override-redirect — the pill is not the WM's to activate");
+                }
+                None => eprintln!("window  realised without a GDK window; \
+                                   clicking the pill may take focus"),
+            });
+        }
+        Err(e) => eprintln!("window  could not set the type hint ({e}); \
+                             the pill may dim the window behind it"),
     }
 }
 
@@ -1615,7 +1768,7 @@ fn raise_regardless(w: &WebviewWindow) {
 ///
 /// Placement is re-applied on every show: monitors come and go, and the pill
 /// should appear on the one being looked at.
-fn show(app: &AppHandle) {
+fn show(app: &AppHandle, confirm: bool) {
     let Some(w) = app.get_webview_window("pill") else {
         return;
     };
@@ -1633,6 +1786,9 @@ fn show(app: &AppHandle) {
     // Sending it at show time costs one event per dictation and removes the
     // whole class of "the pill is the wrong colour until you restart".
     let _ = app.emit("kotha://theme", theme_choice(&settings_path(app)));
+    // Whether to draw ✓ and ✕. Before `listening`, so the capsule grows out of
+    // its line already at the width it will keep — it never resizes on screen.
+    let _ = app.emit("kotha://finish", if confirm { "confirm" } else { "pause" });
 
     // `show()` alone leaves the pill behind the active application, and on a
     // window that has never been on screen it is also the moment AppKit
@@ -1675,7 +1831,13 @@ fn show(app: &AppHandle) {
     // realised, so asking in setup() aborts the process from inside the GTK
     // main loop, where it cannot even unwind. Silent until it is fatal, and
     // worth reporting upstream: the code already has the Option in hand.
-    let _ = w.set_ignore_cursor_events(true);
+    //
+    // Except in `confirm`, where the pill has buttons. Then the whole window
+    // takes clicks — including its transparent margin, PILL_WINDOW around the
+    // capsule — for as long as the dictation runs, and the next `show` puts
+    // click-through back. Focus is unaffected either way: the window cannot
+    // take it (`set_focusable`, `no_activate`), clicked or not.
+    let _ = w.set_ignore_cursor_events(!confirm);
 
     // The property the whole feature rests on. Self-reported by the toolkit,
     // so it is evidence rather than proof, but a `true` here would be
@@ -1790,7 +1952,7 @@ fn monitor_under_pointer(app: &AppHandle) -> Option<tauri::Monitor> {
 
 /// The ways text can leave Kotha, as they appear in the settings window.
 ///
-/// The id is what lands in `settings.json`, so a hand-edited file and a menu
+/// The id is what lands in `settings.json`, so a hand-edited file and a
 /// click cannot mean different things.
 ///
 /// **`portal` is Linux's, and this list is cfg'd for the same reason `HOTKEYS`
@@ -1802,30 +1964,22 @@ fn monitor_under_pointer(app: &AppHandle) -> Option<tauri::Monitor> {
 /// the one that does not.
 #[cfg(target_os = "linux")]
 const PASTE_MODES: [(&str, &str); 3] = [
-    ("copy", "Clipboard only"),
-    ("paste", "Paste at the cursor"),
-    ("portal", "Paste at the cursor (portal)"),
+    ("paste", "Type at cursor"),
+    ("portal", "Type at cursor (portal)"),
+    ("copy", "Copy to clipboard"),
 ];
 
 #[cfg(not(target_os = "linux"))]
-const PASTE_MODES: [(&str, &str); 2] =
-    [("copy", "Clipboard only"), ("paste", "Paste at the cursor")];
+const PASTE_MODES: [(&str, &str); 2] = [("paste", "Type at cursor"), ("copy", "Copy to clipboard")];
 
 /// The three themes. `system` follows the desktop; the other two override it.
 /// Resolved to a concrete light or dark in the UI — see the head of
 /// `settings.js` — so the stylesheet has two palettes and not three.
-const THEMES: [(&str, &str); 3] = [
-    ("system", "Match the system"),
-    ("dark", "Dark"),
-    ("light", "Light"),
-];
+const THEMES: [(&str, &str); 3] = [("system", "System"), ("light", "Light"), ("dark", "Dark")];
 
 /// Start at login, as the settings window offers it. Off is the default: an
 /// app that adds itself to login without being asked is an app people remove.
-const AUTOSTART: [(&str, &str); 2] = [
-    ("on", "Open Kotha when I log in"),
-    ("off", "Only when I open it"),
-];
+const AUTOSTART: [(&str, &str); 2] = [("on", "On"), ("off", "Off")];
 
 /// Whether the system will start Kotha at login. A failure to ask reads as
 /// off and is logged, rather than showing a choice the app cannot vouch for.
@@ -1834,6 +1988,19 @@ fn autostart_on(app: &AppHandle) -> bool {
         eprintln!("login   could not read start at login ({e})");
         false
     })
+}
+
+/// How a dictation ends. `pause` is the original: text lands at every pause
+/// and silence ends it. `confirm` holds everything until ✓ or the hotkey, and
+/// ✕ or Esc throws it away.
+const FINISHES: [(&str, &str); 2] =
+    [("pause", "When I go quiet"), ("confirm", "When I press \u{2713}")];
+
+/// The chosen finish, or `pause`.
+fn finish_choice(path: &Path) -> String {
+    setting(path, "finish")
+        .filter(|f| FINISHES.iter().any(|(id, _)| id == f))
+        .unwrap_or_else(|| FINISHES[0].0.to_string())
 }
 
 /// One file, one JSON object. The hotkey and the microphone add keys here.
@@ -2217,6 +2384,14 @@ mod tests {
             THEMES[0].0, "system",
             "theme.js defaults to system; so must Rust"
         );
+
+        // An unknown finish must not strand a user in `confirm` with no idea
+        // why the pill grew buttons.
+        assert_eq!(finish_choice(&path), "pause");
+        save_setting(&path, "finish", "confirm");
+        assert_eq!(finish_choice(&path), "confirm");
+        save_setting(&path, "finish", "eventually");
+        assert_eq!(finish_choice(&path), "pause");
 
         std::fs::remove_file(&path).ok();
     }

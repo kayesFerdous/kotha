@@ -29,7 +29,7 @@
   Because the glyph is a drawn shape, not a count. Five bars, tapering out
   from the middle, is the mark; generating them from a number would imply
   there is a right answer for six or for twenty, and there is not. Their
-  widths and their chase order are in pill.css, keyed off nth-child.
+  widths and their sweep order are in pill.css, keyed off nth-child.
 -->
 <html lang="en" data-state="idle">
 <head>
@@ -41,7 +41,15 @@
 </head>
 <body>
   <!-- The pill. Everything visible lives in here. -->
-  <div class="pill" role="status" aria-live="polite">
+  <div class="pill">
+    <!-- ✕ and ✓. Only drawn when the finish is `confirm` — see the
+         `data-finish` block in pill.css. Real buttons, so a screen reader
+         gets their names; the window itself never takes keyboard focus, so
+         the keyboard route is the hotkey (✓) and Esc (✕), held by Rust. -->
+    <button class="act" data-keep="false" aria-label="Discard" title="Discard  (Esc)">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>
+    </button>
+
     <div class="glyph" aria-hidden="true">
       <i class="seg"></i>
       <i class="seg"></i>
@@ -50,8 +58,12 @@
       <i class="seg"></i>
     </div>
 
+    <button class="act keep" data-keep="true" aria-label="Insert text" title="Insert text">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.4l3 3 6-6.6"/></svg>
+    </button>
+
     <!-- Screen readers get words; sighted users get the light. -->
-    <span class="sr"></span>
+    <span class="sr" role="status" aria-live="polite"></span>
   </div>
 
   <script src="pill.js"></script>

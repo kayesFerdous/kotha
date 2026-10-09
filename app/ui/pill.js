@@ -1,17 +1,29 @@
 /* ==========================================================================
    Kotha — the pill's behaviour.
 
-   THE ENTIRE RUST↔UI CONTRACT IS TWO EVENTS
-   -----------------------------------------
-   Rust emits, the UI listens. Nothing goes the other way, and the UI never
-   calls into Rust. That is deliberate: it keeps this whole directory
-   replaceable without touching a line of the app, and it is why mock.js can
-   stand in for the entire backend in a browser tab.
+   THE RUST↔UI CONTRACT: FOUR EVENTS IN, ONE CALL OUT
+   --------------------------------------------------
+   Rust emits, the UI listens. That is deliberate: it keeps this whole
+   directory replaceable without touching a line of the app, and it is why
+   mock.js can stand in for the entire backend in a browser tab.
 
      emit("kotha://state",
           "idle" | "listening" | "thinking" | "done" | "copied" | "error")
      emit("kotha://level", <number 0..1>)          // 30 per second, always
      emit("kotha://theme", "system" | "dark" | "light")
+     emit("kotha://finish", "pause" | "confirm")   // at show time
+
+     invoke("finish", { keep: true | false })      // ✓ and ✕, and nothing else
+
+   The one call exists because the `confirm` finish puts two buttons on the
+   pill, and a button has to reach Rust. It is the whole of the traffic the
+   other way: a click, and a yes or no. Rust answers through the same state
+   event as everything else — the pill never decides for itself that a
+   dictation is over, so it cannot drift from what the worker is doing.
+
+   `finish` arrives at show time, before `listening`, so the capsule grows out
+   of its line already at the width it keeps. In `pause` the buttons are not
+   drawn at all and the pill is exactly what it always was.
 
    `theme` arrives on every change and again just before the pill is shown.
    Twice, because the pill is hidden between dictations and this page cannot
@@ -22,10 +34,10 @@
 
    `level` is a plain RMS of the last 1/30 s of audio, unshaped. All the
    curve fitting that makes it look good lives in shape() and push() below,
-   so tuning the glyph never means recompiling Rust. Levels keep coming in
-   every state the microphone is open for — `thinking` included, because the
-   user may still be talking while the model decodes what they said a moment
-   ago.
+   so tuning the glyph never means recompiling Rust. Levels may keep coming
+   for a moment after `thinking` — the microphone closes when the worker gets
+   to it — and the stylesheet ignores them there: in `thinking` the sweep owns
+   the bars.
 
    There is no "armed" and no "paused" state, and there should not be: a live
    microphone in a silent room leaves five bars resting at --rest, which
@@ -34,8 +46,8 @@
 
    WHAT THIS FILE IS ALLOWED TO DO
    -------------------------------
-   Set `data-state` on <html>, and write `--b` on each of the five bars. That
-   is all. Every transition, colour and easing is in pill.css, so a visual
+   Set `data-state` and `data-finish` on <html>, write `--b` on each of the
+   five bars, and pass a button press on. That is all. Every transition, colour and easing is in pill.css, so a visual
    change is a CSS change. If you find yourself animating from here, put it
    back in the stylesheet.
 
@@ -69,7 +81,7 @@ const DWELL = { done: 900, copied: 1600, error: 2200 };
    to -42 dBFS and never rose above -38; ordinary speech is roughly -35 to
    -15. A curve without this calibration put -30 dBFS at 16% of full — so the
    glyph looked dead while the user talked, and the first obvious motion was
-   the decode chase after they stopped.
+   the decode sweep after they stopped.
 
    QUIET         dBFS drawn as an unlit glyph. Just above that room's loudest
                  silence, so an empty room does not twitch.
@@ -103,7 +115,7 @@ const RELEASE = 0.80;
    meter, and a meter invites you to read a value off it. This is not a
    measurement anyone needs — it exists so the user can tell at a glance that
    the microphone is hearing them. Symmetry has no scale to read, so the eye
-   takes it in and lets go. It also keeps the decode chase, which does run
+   takes it in and lets go. It also keeps the decode sweep, which does run
    left to right, unmistakably a different thing. */
 const DISTANCE = [2, 1, 0, 1, 2];
 const REACH = 0.26;
@@ -173,7 +185,6 @@ function setState(next) {
     return;
   }
   clearTimeout(dwellTimer);
-  const prev = root.dataset.state;
   root.dataset.state = next;
   label.textContent = {
     idle: "",
@@ -184,12 +195,9 @@ function setState(next) {
     error: "Dictation failed",
   }[next];
 
-  /* A new dictation starts dark. Coming back from `thinking` is not a new
-     dictation — the model was decoding one sentence while the user spoke the
-     next, and levels kept arriving the whole time (Rust emits them from the
-     microphone, not from the decode loop). Resetting the release envelope
-     here would blink the glyph off in the middle of a word. */
-  if (next === "listening" && prev !== "thinking") drain();
+  /* A new dictation starts dark. `listening` only ever opens one: the pill
+     never goes back to it from `thinking`, which is shown only after a stop. */
+  if (next === "listening") drain();
   // The pill leaves on its own after a terminal state; Rust need not say so.
   if (DWELL[next]) dwellTimer = setTimeout(() => setState("idle"), DWELL[next]);
 }
@@ -200,13 +208,34 @@ function setState(next) {
    Inside Tauri, listen for the two events. Outside it, mock.js finds these on
    window and drives them instead — same code path, no branches in the UI. */
 
-window.kotha = { setState, push, drain, STATES };
+function setFinish(how) {
+  root.dataset.finish = how === "confirm" ? "confirm" : "pause";
+}
+
+window.kotha = { setState, push, drain, setFinish, STATES, finish: () => {} };
+
+/* Read off window.kotha at click time, not bound here, so mock.js can put its
+   own in after this file has run. Only answered while listening: a second
+   click during the fade-out must not reach a dictation that has moved on. */
+for (const b of document.querySelectorAll(".act")) {
+  // A mouse press would otherwise draw a focus ring on a window that cannot
+  // take keyboard focus anyway.
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("click", () => {
+    if (root.dataset.state === "listening") window.kotha.finish(b.dataset.keep === "true");
+  });
+}
 
 if (window.__TAURI__) {
   const { listen } = window.__TAURI__.event;
+  const { invoke } = window.__TAURI__.core;
   listen("kotha://state", (e) => setState(e.payload));
   listen("kotha://level", (e) => push(e.payload));
   listen("kotha://theme", (e) => kothaTheme(e.payload));
+  listen("kotha://finish", (e) => setFinish(e.payload));
+  window.kotha.finish = (keep) => invoke("finish", { keep });
 }
+
+setFinish("pause");
 
 setState("idle");

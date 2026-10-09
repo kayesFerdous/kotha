@@ -3,170 +3,143 @@
 
    THE CONTRACT, WHICH IS TWO CALLS
    --------------------------------
-   The pill's contract is one-way and stays that way (see the head of
-   pill.js). This window, like the first-run one, calls into Rust — and it is
-   the only other place that does.
-
      invoke("settings_get")  -> { every value, and every list to draw it from }
      invoke("settings_set", { key, value })  -> ok, or a rejection in words
 
-   `settings_get` answers once, on load, and the reply carries the OPTION
-   LISTS as well as the values. That is the important half: the hotkeys, the
-   text-output routes and the themes are all Rust constants, and a copy of any
-   of them written into this file is a copy that drifts from what the app will
-   accept. Nothing in app/ui/ knows what a paste route is.
+   The reply to settings_get carries the OPTION LISTS as well as the values:
+   the hotkeys, finishes, paste routes, themes and login choices are Rust
+   constants, and a
+   copy of any of them here is a copy that drifts from what the app accepts.
 
-   `settings_set` is per-change rather than a Save button, because every
-   setting here is either read at the top of the next dictation or applied the
-   instant it changes. There is nothing to batch and nothing to cancel.
+   Every change is saved the moment it is made, and nothing says "Saved" —
+   the control already shows the new value, and a toast repeating it is noise.
+   What does get said is a refusal: Rust validates and Rust applies, so the
+   hotkey you picked may belong to another application. Then the control goes
+   BACK to what the app is actually using, and the row says why in red, until
+   the next change. A control left on a value the app refused is a window that
+   lies about what it is doing.
 
-   WHAT A REJECTION MEANS
-   ----------------------
-   Rust validates and Rust applies, so a rejection is a real outcome and not a
-   bug: the hotkey you picked belongs to another application, or an
-   environment variable has taken the setting over. Every one is a sentence
-   meant to be read. When one arrives the radio is put BACK to what the app is
-   actually using — a control left sitting on a value the app rejected is a
-   window that lies about what it is doing.
-
-   WHAT THIS FILE IS ALLOWED TO DO
-   -------------------------------
-   Build the option rows, call kothaTheme, and write the footer. Which row is
-   tinted, how a group is greyed out, what the focus ring looks like — all of
-   that is pill.css under `body.settings`, keyed off `:checked` and
-   `:disabled`. If you find yourself setting a colour from here, put it back
-   in the stylesheet.
+   WHAT EACH ROW SAYS
+   ------------------
+   One sentence, about the current choice only, rewritten when it changes —
+   see SAYS. That is the whole of the page's explaining.
 
    MOCK
    ----
-   The bottom of this file notices there is no Tauri and serves the same
-   payload from memory, so app/ui/settings.html opens in a browser, renders,
-   and themes. Same trade as mock.js: it ships inside the app and stands down
-   at runtime, which is cheaper than a build step that exists to delete it.
+   The bottom of this file serves the same payload from memory when there is
+   no Tauri, so settings.html opens in a browser. It ships inside the app and
+   stands down at runtime.
    ========================================================================== */
 
-const status = document.getElementById("status");
+const MAC = /Mac/.test(navigator.platform);
 
-/** How long a "Saved" lingers. Long enough to notice, short enough that the
-    footer is empty again before the next change — see the note in pill.css
-    about a page that permanently reads "Saved". */
-const SAID = 2400;
-let saidTimer = null;
-
-function say(text, bad = false) {
-  clearTimeout(saidTimer);
-  status.textContent = text;
-  status.classList.toggle("bad", bad);
-  // An error stays until the next thing happens. It is the only message on
-  // this page the user has to act on, and 2.4 seconds is not long enough to
-  // read a sentence you were not expecting.
-  if (!bad) saidTimer = setTimeout(() => (status.textContent = ""), SAID);
+/** `Ctrl+Shift+Space` as a person would write it: ⌃⇧Space on a Mac,
+    Ctrl + Shift + Space elsewhere. */
+function keyName(k) {
+  if (!MAC) return k.split("+").join(" + ");
+  const sym = { Ctrl: "⌃", Control: "⌃", Alt: "⌥", Option: "⌥", Shift: "⇧", Cmd: "⌘", Super: "⌘" };
+  return k.split("+").map((p) => sym[p] || p).join("");
 }
 
-/** What the app is actually using, per group.
+/** The sentence under each row, for the value it currently has. `s` is the
+    whole settings payload, because one row's sentence can name another's
+    value — the finish row tells you which key ends a dictation. */
+const SAYS = {
+  hotkey: (v) => `Press ${keyName(v)} in any app to start dictating.`,
+  finish: (v, s) =>
+    ({
+      pause: "Text appears each time you pause. Kotha stops after 3 seconds of quiet.",
+      confirm: `Talk as long as you like. Press ✓ or ${keyName(s.hotkey)} to insert it all, or Esc to throw it away.`,
+    })[v],
+  paste: (v) =>
+    ({
+      paste: "Kotha types the text wherever your cursor is.",
+      portal: "Types at your cursor through the desktop’s permission prompt. It asks once.",
+      copy: `The text is copied. Paste it yourself with ${MAC ? "⌘V" : "Ctrl+V"}.`,
+    })[v],
+  autostart: (v) =>
+    v === "on"
+      ? "Kotha starts when you log in and waits in the tray."
+      : "Kotha starts only when you open it.",
+};
 
-    Kept here rather than read back out of the DOM, because the DOM is where
-    the *attempt* lives: by the time a rejection arrives the radio already
-    shows what was clicked, which is exactly the value we need to undo. */
-const current = {};
+let s = {}; // what the app is actually using
 
-/** Markup-safe, for the one place a value reaches innerHTML.
+/* -------------------------------------------------------------- drawing */
 
-    The hotkeys are Rust constants except for one case: `hotkey_choice` accepts
-    anything Tauri can parse out of a hand-edited settings.json, and shows it
-    alongside the offered four. That is a value from a file, so it is escaped
-    before it becomes a <kbd>. Everything else on this page is set with
-    textContent. */
-const esc = (t) =>
-  t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-
-/** A shortcut as keys: `Ctrl+Shift+Space` -> Ctrl + Shift + Space. */
-const keys = (k) => k.split("+").map((x) => `<kbd>${esc(x)}</kbd>`).join(" + ");
-
-/**
- * Draw one group of radios.
- *
- * `options` is a list of [value, label] pairs exactly as Rust sent it, so the
- * order on screen is the order in the Rust constant — which for the hotkeys
- * means the default is first, and that is not an accident.
- *
- * `html` says the labels carry markup. Only the hotkey group does, and only
- * because a key is drawn as <kbd>.
- */
-function group(id, options, chosen, { disabled = false, html = false } = {}) {
-  const box = document.getElementById(id);
-  current[id] = chosen;
-
-  box.replaceChildren(
-    ...options.map(([value, label]) => {
-      const row = document.createElement("label");
-      row.className = "opt";
-
-      const input = document.createElement("input");
-      input.type = "radio";
-      input.name = id;
-      input.value = value;
-      // The property, not the attribute: this is the live selection.
-      input.checked = value === chosen;
-      input.disabled = disabled;
-
-      const name = document.createElement("span");
-      name.className = "opt-name";
-      name[html ? "innerHTML" : "textContent"] = label;
-
-      row.append(input, name);
-      return row;
-    })
-  );
+/** Radios inside labels, one per option. Both controls on this page are
+    built from these, so arrow keys, focus and screen readers all work
+    without being given anything by hand. */
+function radios(name, options, chosen, disabled = false) {
+  return options.map(([value, label]) => {
+    const opt = document.createElement("label");
+    const input = Object.assign(document.createElement("input"), {
+      type: "radio", name, value, checked: value === chosen, disabled,
+    });
+    opt.append(input, label);
+    return opt;
+  });
 }
 
-/**
- * Save one change, and put the radio back if Rust would not have it.
- *
- * One listener per group, added once at the bottom of this file and never
- * removed — `current` carries the value across saves, so there is nothing to
- * rewire and no cloning. An earlier draft re-cloned the group after every
- * save and silently lost the selection: `cloneNode` copies the `checked`
- * ATTRIBUTE, and this sets the property.
- */
+/** A segmented switch: the radios side by side. */
+function segmented(id, options, chosen) {
+  document.getElementById(id).replaceChildren(...radios(id, options, chosen));
+}
+
+/** A dropdown: a <details> whose summary shows the choice and whose body is
+    the radios stacked. See the head of settings.html for why not <select>. */
+function menu(id, options, chosen, disabled) {
+  const el = document.getElementById(id);
+  el.open = false;
+  el.classList.toggle("disabled", disabled);
+  el.querySelector("summary").textContent = options.find(([v]) => v === chosen)?.[1] ?? chosen;
+  el.querySelector(".list").replaceChildren(...radios(id, options, chosen, disabled));
+}
+
+/** Write a row's sentence: what its value does, or — `bad` — why it was refused. */
+function say(key, text = SAYS[key]?.(s[key], s), bad = false) {
+  const p = document.querySelector(`[data-key="${key}"] .says`);
+  if (!p) return;
+  p.textContent = text || "";
+  p.classList.toggle("bad", bad);
+}
+
+function render() {
+  kothaTheme(s.theme);
+
+  // The bound key plus any hand-edited one already arrive merged in `hotkeys`.
+  menu("hotkey", s.hotkeys.map((k) => [k, keyName(k)]), s.hotkey, false);
+  segmented("finish", s.finishes, s.finish);
+  menu("paste", s.pasteModes, s.paste, s.pasteForced);
+  segmented("theme", s.themes, s.theme);
+  segmented("autostart", s.autostarts, s.autostart);
+
+  for (const key of ["hotkey", "finish", "paste", "autostart"]) say(key);
+  if (!s.hotkeyBound) {
+    say("hotkey", "Another app already uses this key, so it does nothing. Pick a different one.", true);
+  }
+  if (s.pasteForced) say("paste", "Set by KOTHA_PASTE in the environment. Unset it to choose here.", true);
+
+  document.getElementById("about").textContent =
+    `Kotha ${s.version} · Runs entirely on this computer.`;
+}
+
+/* --------------------------------------------------------------- saving */
+
 async function save(key, value) {
-  const previous = current[key];
-  if (value === previous) return;
-
+  if (value === s[key]) return;
   try {
     await set(key, value);
-    current[key] = value;
-    if (key === "theme") kothaTheme(value);
-    // A key that bound is a key that is no longer unbound.
-    if (key === "hotkey") document.getElementById("hotkey-unbound").hidden = true;
-    say("Saved");
+    s[key] = value;
+    if (key === "hotkey") s.hotkeyBound = true;
+    render(); // closes the menu, and the finish sentence names the hotkey
   } catch (message) {
-    say(String(message), true);
-    const back = document.querySelector(`input[name="${key}"][value="${previous}"]`);
-    if (back) back.checked = true;
+    render(); // back to what the app is using…
+    say(key, String(message), true); // …and why
   }
 }
 
-function render(s) {
-  kothaTheme(s.theme);
-
-  group("hotkey", s.hotkeys.map((k) => [k, keys(k)]), s.hotkey, { html: true });
-  const unbound = document.getElementById("hotkey-unbound");
-  unbound.hidden = s.hotkeyBound;
-  unbound.textContent =
-    "Another application already has this key, so nothing is bound. " +
-    "Pick a different one — until then, the tray icon's Dictate starts a dictation.";
-
-  group("paste", s.pasteModes, s.paste, { disabled: s.pasteForced });
-  document.getElementById("paste-forced").hidden = !s.pasteForced;
-  document.getElementById("paste-forced").textContent =
-    "KOTHA_PASTE is set in the environment, so it is deciding this. Unset it to choose here.";
-
-  group("theme", s.themes, s.theme);
-  group("autostart", s.autostarts, s.autostart);
-}
-
-/* ------------------------------------------------------------------ Tauri */
+/* ---------------------------------------------------------------- Tauri */
 
 let get, set;
 
@@ -177,8 +150,7 @@ if (window.__TAURI__) {
   get = () => invoke("settings_get");
   set = (key, value) => invoke("settings_set", { key, value });
 
-  // Another window — or a hand-edited settings.json picked up on the next
-  // show — can change the theme while this one is open. Cheap to follow.
+  // Another window, or a hand-edited settings.json, can change the theme.
   listen("kotha://theme", (e) => kothaTheme(e.payload));
 } else {
   /* ----------------------------------------------------------------- mock */
@@ -188,36 +160,58 @@ if (window.__TAURI__) {
     hotkey: "F9",
     hotkeys: ["F9", "Ctrl+Shift+Space", "Alt+Shift+D", "Ctrl+Alt+Space"],
     hotkeyBound: true,
-    paste: "copy",
+    finish: "pause",
+    finishes: [["pause", "When I go quiet"], ["confirm", "When I press ✓"]],
+    paste: "paste",
     pasteModes: [
-      ["copy", "Clipboard only"],
-      ["paste", "Paste at the cursor"],
-      ["portal", "Paste at the cursor (portal)"],
+      ["paste", "Type at cursor"],
+      ["portal", "Type at cursor (portal)"],
+      ["copy", "Copy to clipboard"],
     ],
     pasteForced: false,
     theme: "system",
-    themes: [["system", "Match the system"], ["dark", "Dark"], ["light", "Light"]],
+    themes: [["system", "System"], ["light", "Light"], ["dark", "Dark"]],
     autostart: "off",
-    autostarts: [["on", "Open Kotha when I log in"], ["off", "Only when I open it"]],
+    autostarts: [["on", "On"], ["off", "Off"]],
+    version: "0.2.0",
   };
 
-  get = async () => state;
+  get = async () => structuredClone(state);
   set = async (key, value) => {
-    // One refusal, so the rejection path is reachable without a build: this is
-    // the shape of "another application already has that key".
+    // One refusal, so the red path can be looked at without a build.
     if (key === "hotkey" && value === "Ctrl+Alt+Space") {
-      throw `${value} is already taken by another application. Still using ${state.hotkey}.`;
+      throw `Another app already uses ${keyName(value)}. Still using ${keyName(state.hotkey)}.`;
     }
     state[key] = value;
   };
 }
 
-/* One listener per group, on the container rather than on each radio: the
-   rows are replaced whenever a group is drawn, and a listener on the box
-   survives that. Added before the first render, so nothing has to be rewired
-   afterwards. */
-for (const id of ["hotkey", "paste", "theme", "autostart"]) {
-  document.getElementById(id).addEventListener("change", (e) => save(id, e.target.value));
+/* One listener per control, on the container: the options inside are
+   replaced on every render and a listener up here survives that. */
+for (const key of ["hotkey", "finish", "paste", "theme", "autostart"]) {
+  document.getElementById(key).addEventListener("change", (e) => save(key, e.target.value));
 }
 
-get().then(render).catch((e) => say(`Could not read the settings: ${e}`, true));
+/* A dropdown closes on a click anywhere else, and on Esc — back to its
+   summary, so the keyboard does not lose its place. */
+addEventListener("click", (e) => {
+  for (const m of document.querySelectorAll(".menu[open]")) if (!m.contains(e.target)) m.open = false;
+});
+addEventListener("keydown", (e) => {
+  const m = e.key === "Escape" && document.querySelector(".menu[open]");
+  if (m) { m.open = false; m.querySelector("summary").focus(); }
+});
+// A forced setting shows its value but does not open.
+for (const m of document.querySelectorAll(".menu")) {
+  m.querySelector("summary").addEventListener("click", (e) => {
+    if (m.classList.contains("disabled")) e.preventDefault();
+  });
+  // Opening moves focus onto the chosen option, so arrows work at once.
+  m.addEventListener("toggle", () => m.open && m.querySelector(":checked")?.focus());
+}
+
+get()
+  .then((reply) => { s = reply; render(); })
+  .catch((e) => {
+    document.getElementById("about").textContent = `Could not read the settings: ${e}`;
+  });

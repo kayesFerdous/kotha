@@ -17,6 +17,9 @@
      t            cycle the theme: system → dark → light. Stands in for the
                   kotha://theme event, which is the only way the real pill
                   ever learns this — it cannot ask.
+     f            toggle the finish: pause ↔ confirm. Stands in for
+                  kotha://finish. In confirm, ✓ and ✕ answer the way Rust
+                  does — thinking then done, or straight back to idle.
 
    It also runs a scripted loop on load so the pill is doing something the
    moment the file opens.
@@ -30,7 +33,7 @@
 if (window.__TAURI__) {
   console.info("kotha: real backend present, mock stood down");
 } else {
-  const { setState, push, STATES } = window.kotha;
+  const { setState, push, setFinish, STATES } = window.kotha;
 
   let speaking = true;
   let t = 0;
@@ -58,8 +61,8 @@ if (window.__TAURI__) {
     return syllable * tremor * pause * 0.09 + Math.random() * 0.01;
   }
 
-  /* Rust meters the microphone whatever the pill is showing — the user may
-     talk straight through a decode — so the mock feeds `thinking` too. */
+  /* Levels during `thinking` too, as the real microphone may still send for
+     a moment after a stop — the stylesheet has to be the thing ignoring them. */
   setInterval(() => {
     const state = document.documentElement.dataset.state;
     if (state === "listening" || state === "thinking") push(fakeLevel());
@@ -90,6 +93,14 @@ if (window.__TAURI__) {
     setTimeout(() => run(i + 1), hold);
   })();
 
+  /* What Rust does with a click: ✓ decodes the last sentence and types it,
+     ✕ throws everything away. The timings are the real app's, roughly. */
+  window.kotha.finish = (keep) => {
+    scripted = false;
+    setState(keep ? "thinking" : "idle");
+    if (keep) setTimeout(() => setState("done"), 900);
+  };
+
   addEventListener("keydown", (e) => {
     scripted = false;
     const at = STATES.indexOf(document.documentElement.dataset.state);
@@ -100,6 +111,13 @@ if (window.__TAURI__) {
       setState(STATES[Number(e.key) - 1]);
     } else if (e.key.toLowerCase() === "m") {
       speaking = !speaking;
+    } else if (e.key.toLowerCase() === "f") {
+      const next = document.documentElement.dataset.finish === "confirm" ? "pause" : "confirm";
+      setFinish(next);
+      console.info(`kotha: finish ${next}`);
+    } else if (e.key === "Escape") {
+      const { finish, state } = document.documentElement.dataset;
+      if (finish === "confirm" && state === "listening") window.kotha.finish(false);
     } else if (e.key.toLowerCase() === "t") {
       theme = (theme + 1) % THEMES.length;
       kothaTheme(THEMES[theme]);

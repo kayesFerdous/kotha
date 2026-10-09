@@ -1,8 +1,8 @@
 /* ==========================================================================
    Kotha — the first-run window's behaviour.
 
-   THE CONTRACT, WHICH IS ONE EVENT AND FOUR CALLS
-   -----------------------------------------------
+   THE CONTRACT, WHICH IS TWO EVENTS AND FIVE CALLS
+   ------------------------------------------------
    The pill's contract is one-way: Rust emits, the UI listens, and the UI never
    calls into Rust (see the header of pill.js — that stays true). This window is
    the single exception in the app, and it exists for exactly one reason:
@@ -12,6 +12,8 @@
      invoke("hotkey_label") -> "F9"                  // or null if nothing bound
      invoke("settings_get") -> { paste, pasteModes, ... }   // the second question
      invoke("settings_set", { key, value })          // the answer to it
+     invoke("model_present") -> true                 // a reload, not a first run
+     listen("kotha://hotkey", "F9" | null)           // Settings rebound it
      listen("kotha://download", { done, total })    // progress, ~1 per MB
      listen("kotha://download", { error })          // it went wrong, in words
 
@@ -215,6 +217,14 @@ if (window.__TAURI__) {
     hotkey = key;
     ready();
   });
+  // This window can be open beside Settings, which can rebind the key.
+  listen("kotha://hotkey", (e) => {
+    hotkey = e.payload;
+    ready();
+  });
+  // A page load is not only the first one: a reload (F5) must not put a user
+  // whose model is already on disk back in front of "Download the model".
+  invoke("model_present").then((yes) => yes && phase("ready"));
 } else {
   /* ----------------------------------------------------------------- mock */
   console.info("kotha: no backend, faking the download");
