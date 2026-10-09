@@ -20,7 +20,7 @@
 # comes from `makepkg --printsrcinfo > .SRCINFO`.
 
 pkgname=kotha-bin
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Offline Bengali-English dictation: press a hotkey, talk, and the text lands at your cursor"
 arch=('x86_64')
@@ -60,7 +60,7 @@ optdepends=(
 # The model is not in here. Kotha downloads its 778 MB on first run, into
 # ~/.local/share/app.kotha/, and asks before it starts.
 source=("$url/releases/download/v$pkgver/Kotha_${pkgver}_amd64.deb")
-sha256sums=('48bdba9ddbe3dbb0d94ee775305ec849e832a90a965ca4396b3b996134c253fb')
+sha256sums=('711f96b42043c047d656e89c8c35f0dc5ba40397d19c5cdf84a34bb9086000c9')
 
 package() {
   # makepkg's bsdtar already split the .deb into its three members; the files

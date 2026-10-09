@@ -79,7 +79,7 @@ require_power() {
 # installs it first. That is a ~160 MB download.
 #
 #   ./setup.sh --release             # the version in tauri.conf.json
-#   ./setup.sh --release=v0.1.0      # a specific tag
+#   ./setup.sh --release=v0.2.0      # a specific tag
 #
 # Run it once the assets are on the release and *before* publishing, then
 # commit and push. install.sh is fetched from main, so main is where the sums
