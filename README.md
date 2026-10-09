@@ -70,7 +70,7 @@ What it saves you, per platform:
 - **Anything else** (Fedora, openSUSE, Void) — unpacks the AppImage under
   `~/.local`, with a menu entry. `--appimage` forces this route anywhere.
 
-**Windows 10 or 11** — download `Kotha_0.1.0_x64_en-US.msi` from the
+**Windows 10 or 11** — download `Kotha_0.2.0_x64_en-US.msi` from the
 [latest release](https://github.com/kayesFerdous/kotha/releases/latest). It is
 not code-signed yet, so SmartScreen warns before it runs: choose **More info**,
 then **Run anyway**.
