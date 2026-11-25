@@ -141,13 +141,15 @@ async function save(key, value) {
 
 /* ---------------------------------------------------------------- Tauri */
 
-let get, set;
+let get, set, checkUpdate, updateNow;
 
 if (window.__TAURI__) {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
   get = () => invoke("settings_get");
+  checkUpdate = () => invoke("check_update");
+  updateNow = () => invoke("update_now");
   set = (key, value) => invoke("settings_set", { key, value });
 
   // Another window, or a hand-edited settings.json, can change the theme.
@@ -177,6 +179,9 @@ if (window.__TAURI__) {
   };
 
   get = async () => structuredClone(state);
+  // Newer than the mock's 0.2.0, so both steps of the button can be seen.
+  checkUpdate = async () => ({ latest: "0.3.0", newer: true });
+  updateNow = async () => "Copied the update command. Paste it into a terminal and press Enter, then reopen Kotha.";
   set = async (key, value) => {
     // One refusal, so the red path can be looked at without a build.
     if (key === "hotkey" && value === "Ctrl+Alt+Space") {
@@ -185,6 +190,35 @@ if (window.__TAURI__) {
     state[key] = value;
   };
 }
+
+/* -------------------------------------------------------------- updates
+
+   One button, two jobs. "Check now" asks Rust which release GitHub calls
+   latest; if it is newer the button becomes "Update", which asks Rust to
+   start the upgrade and says what it did. Nothing here runs on its own. */
+
+const upd = document.getElementById("update");
+let updateReady = false;
+
+upd.addEventListener("click", async () => {
+  upd.disabled = true;
+  try {
+    if (updateReady) {
+      say("update", await updateNow());
+    } else {
+      say("update", "Checking…");
+      const r = await checkUpdate();
+      updateReady = r.newer;
+      upd.textContent = r.newer ? "Update" : "Check now";
+      say("update", r.newer
+        ? `Kotha ${r.latest} is out. You have ${s.version}.`
+        : `You have the latest version, ${s.version}.`);
+    }
+  } catch (message) {
+    say("update", String(message), true);
+  }
+  upd.disabled = false;
+});
 
 /* One listener per control, on the container: the options inside are
    replaced on every render and a listener up here survives that. */

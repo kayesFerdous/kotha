@@ -2729,6 +2729,7 @@ name = "kotha"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "cpal",
  "gtk",
  "kotha-spike",

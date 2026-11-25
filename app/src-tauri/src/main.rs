@@ -536,6 +536,91 @@ fn settings_set(app: AppHandle, key: String, value: String) -> Result<(), String
     Ok(())
 }
 
+const REPO: &str = "kayesFerdous/kotha";
+
+/// The one line that upgrades Kotha on Linux and macOS. `install.sh` already
+/// knows every route — pacman on Arch, apt on Debian, the AppImage, the dmg —
+/// and checks a pinned SHA-256 before it touches anything, so the app hands
+/// the user that rather than growing a second, weaker installer of its own.
+const INSTALL_CMD: &str =
+    "curl -fsSL https://raw.githubusercontent.com/kayesFerdous/kotha/main/packaging/install.sh | bash";
+
+/// `"0.10.1"` > `"0.9.3"`, compared as numbers. A leading `v` is ignored and a
+/// part that is not a number counts as 0, so a malformed tag never looks newer.
+fn newer(latest: &str, current: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    parts(latest) > parts(current)
+}
+
+/// Ask GitHub which release is latest. Only ever run when the user clicks
+/// "Check now" — Kotha makes no network call on its own after first run.
+///
+/// `async` so the blocking request runs off the main thread, where a slow
+/// network would freeze every window.
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<serde_json::Value, String> {
+    let current = app.package_info().version.to_string();
+    let release: serde_json::Value = tauri::async_runtime::spawn_blocking(|| {
+        let http: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(15)))
+            .build()
+            .into();
+        http.get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
+            // GitHub's API refuses requests without one.
+            .header("User-Agent", "kotha")
+            .call()
+            .map_err(|e| format!("Could not reach GitHub ({e})."))?
+            .body_mut()
+            .read_json::<serde_json::Value>()
+            .map_err(|e| format!("GitHub sent something unreadable ({e})."))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let latest = release["tag_name"]
+        .as_str()
+        .ok_or("GitHub did not say which release is latest.")?
+        .trim_start_matches('v')
+        .to_string();
+    eprintln!("kotha: update check: running {current}, latest {latest}");
+    Ok(serde_json::json!({
+        "latest": latest,
+        "newer": newer(&latest, &current),
+    }))
+}
+
+/// Start the upgrade, and say what happened in a sentence for the window.
+///
+/// Windows has no `install.sh`, so it gets the release page and its `.msi`.
+/// Everywhere else the install command goes on the clipboard: upgrading needs
+/// `sudo` on Linux, and a password prompt belongs in a terminal the user can
+/// see, not behind a button.
+#[tauri::command]
+fn update_now() -> Result<String, String> {
+    if cfg!(target_os = "windows") {
+        let url = format!("https://github.com/{REPO}/releases/latest");
+        std::process::Command::new("explorer")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Could not open {url} ({e})."))?;
+        return Ok("Opened the release page. Download the .msi and run it.".into());
+    }
+    // Kept for the life of the process: on Linux the copied text is served by
+    // whoever owns the clipboard, and a dropped `Clipboard` can take it along.
+    static CB: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+    let mut cb = CB.lock().unwrap_or_else(|e| e.into_inner());
+    if cb.is_none() {
+        *cb = arboard::Clipboard::new().ok();
+    }
+    cb.as_mut()
+        .ok_or(arboard::Error::ClipboardNotSupported)
+        .and_then(|cb| cb.set_text(INSTALL_CMD))
+        .map_err(|e| format!("Could not copy the command ({e}). Run: {INSTALL_CMD}"))?;
+    Ok("Copied the update command. Paste it into a terminal and press Enter, then reopen Kotha.".into())
+}
+
 /// Bytes already on disk, or 0 — a missing file and an empty one are the same
 /// thing to a resume.
 fn on_disk(path: &Path) -> u64 {
@@ -733,7 +818,9 @@ fn main() {
             model_present,
             finish,
             settings_get,
-            settings_set
+            settings_set,
+            check_update,
+            update_now
         ])
         // The ✕ on the first-run and settings windows hides them rather than
         // destroying them. They are declared in tauri.conf.json, created once
@@ -2279,6 +2366,15 @@ fn tray(app: &AppHandle) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_compare_as_numbers() {
+        assert!(newer("0.10.0", "0.9.3"));
+        assert!(newer("v0.2.1", "0.2.0"));
+        assert!(!newer("0.2.0", "0.2.0"));
+        assert!(!newer("0.1.9", "0.2.0"));
+        assert!(!newer("junk", "0.2.0"));
+    }
 
     /// Settings must round-trip, share one file without clobbering each other,
     /// and never hand `Output::open` a mode — or the shortcut plugin a string —

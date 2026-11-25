@@ -940,6 +940,19 @@ body.settings .switch label:has(:focus-visible) {
   outline-offset: 1px;
 }
 
+body.settings button.control {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--thumb);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+body.settings button.control:hover { background: var(--surface-lit); }
+body.settings button.control:disabled { opacity: 0.5; cursor: default; }
+body.settings button.control:focus-visible { outline: 2px solid var(--alert); outline-offset: 1px; }
+
 body.settings footer {
   padding: 18px var(--pad) 22px;
   font-size: 12px;
