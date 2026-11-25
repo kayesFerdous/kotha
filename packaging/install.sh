@@ -31,7 +31,7 @@
 # — `pacman -Qi kotha-bin` describes them, `pacman -R kotha-bin` removes them.
 #
 # On Debian and Ubuntu it saves nothing but a page visit; `sudo apt install
-# ./Kotha_0.2.0_amd64.deb` does the same job.
+# ./Kotha_0.3.0_amd64.deb` does the same job.
 #
 # --------------------------------------------------------------------------
 # To update for a release: bump VERSION, then replace the four sums with the
@@ -47,14 +47,14 @@
 
 set -euo pipefail
 
-VERSION=0.2.0
+VERSION=0.3.0
 REPO=kayesFerdous/kotha
 BASE="https://github.com/$REPO/releases/download/v$VERSION"
 
-SHA_DMG_ARM64=ec3c4c5b43c32dc4dc7274057a6419002e3826c129ea3db2a5cb48810b821018
-SHA_DMG_X64=69335976035382412c6838f3c3fbdba404efc12f45683c44d7f4073f8c573f82
-SHA_DEB=711f96b42043c047d656e89c8c35f0dc5ba40397d19c5cdf84a34bb9086000c9
-SHA_APPIMAGE=bc099ca26c1fa954367846347d340468103c3fa5d977e4794a55ed4934cb638b
+SHA_DMG_ARM64=be8c69073217af012738fe06f40d6dba25c81cef7049a8530cd8e3bd899c4778
+SHA_DMG_X64=075f1f3658b3ab9ec4f29c8f6bb64006422ded3ab3ede175babd8e47076b935d
+SHA_DEB=02e1e92e83cb761393ba214d8558c44ffee1dfa0749b65327c7773c709cde4f5
+SHA_APPIMAGE=66954ab247acdf54f8c3958e8c3b42acfbb3f2cc661161f78639b6c4c486c145
 
 # Spelled out rather than sed'd out of the header comment the way setup.sh
 # does it: this script's normal home is a pipe, where there is no
